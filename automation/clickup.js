@@ -143,7 +143,7 @@ async function main() {
         break;
       }
 
-      case 'search-tasks': {
+      case 'searchTasks': {
         const query = args.find(a => a.startsWith('--query='))?.split('=')[1] || args[1];
         if (!query) { console.error('Usage: search-tasks <query>'); process.exit(1); }
         const res = await request(`/team/${TEAM_ID}/task?search=${encodeURIComponent(query)}&limit=20`);
@@ -153,7 +153,7 @@ async function main() {
       }
 
       default:
-        console.log('ClickUp CLI — Hermes wrapper');
+        console.log('ClickUp CLI - Hermes wrapper');
         console.log('Usage: node clickup.js <command> [options]');
         console.log('Commands:');
         console.log('  list-spaces                      List all spaces');
