@@ -13,7 +13,6 @@
  *   node clickup.js list-spaces
  *   node clickup.js list-lists --space <spaceId>
  */
-
 const https = require('https');
 const { argv, env } = process;
 
@@ -25,8 +24,8 @@ if (!TOKEN) {
   process.exit(1);
 }
 
-const BASE = `https://api.clickup.com/api/v2`;
-const AUTH = `Bearer ${TOKEN}`;
+const BASE = 'https://api.clickup.com/api/v2';
+const AUTH = TOKEN;
 
 function request(path, method = 'GET', body = null) {
   return new Promise((resolve, reject) => {
