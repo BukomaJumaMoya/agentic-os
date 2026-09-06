@@ -9,7 +9,7 @@
  *   node clickup.js get-task <taskId>
  *   node clickup.js create-task --list <listId> --name <name> [--desc <desc>] [--priority <priority>] [--status <statusId>]
  *   node clickup.js update-task <taskId> [--name <name>] [--desc <desc>] [--status <status>] [--priority <priority>]
- *   node clickup.js search-tasks --query <query>
+ *   node clickup.js searchTasks --query <query>
  *   node clickup.js list-spaces
  *   node clickup.js list-lists --space <spaceId>
  */
@@ -27,7 +27,7 @@ if (!TOKEN) {
 const BASE = 'https://api.clickup.com/api/v2';
 const AUTH = TOKEN;
 
-function request(path, method = 'GET', body = null) {
+function request(path, method = 'GET', body = null, retries = 2) {
   return new Promise((resolve, reject) => {
     const url = new URL(`${BASE}${path}`);
     const opts = {
@@ -45,11 +45,20 @@ function request(path, method = 'GET', body = null) {
       let data = '';
       res.on('data', c => data += c);
       res.on('end', () => {
+        const truncated = data.length > 500 ? data.slice(0, 500) + '...<truncated>' : data;
+        if (res.statusCode >= 500 && retries > 0) {
+          setTimeout(() => request(path, method, body, retries - 1).then(resolve).catch(reject), 2000);
+          return;
+        }
+        if (res.statusCode === 429 && retries > 0) {
+          setTimeout(() => request(path, method, body, retries - 1).then(resolve).catch(reject), 4000);
+          return;
+        }
         try {
           const json = JSON.parse(data);
-          resolve({ status: res.statusCode, body: json, raw: data });
+          resolve({ status: res.statusCode, body: json, raw: truncated });
         } catch {
-          resolve({ status: res.statusCode, body: null, raw: data });
+          resolve({ status: res.statusCode, body: null, raw: truncated });
         }
       });
     });
@@ -145,7 +154,7 @@ async function main() {
 
       case 'searchTasks': {
         const query = args.find(a => a.startsWith('--query='))?.split('=')[1] || args[1];
-        if (!query) { console.error('Usage: search-tasks <query>'); process.exit(1); }
+        if (!query) { console.error('Usage: searchTasks <query>'); process.exit(1); }
         const res = await request(`/team/${TEAM_ID}/task?search=${encodeURIComponent(query)}&limit=20`);
         if (res.status !== 200) { console.error('Error:', res.status, res.raw); process.exit(1); }
         console.log(JSON.stringify(res.body.tasks || [], null, 2));
@@ -162,7 +171,7 @@ async function main() {
         console.log('  get-task <taskId>               Get a single task');
         console.log('  create-task --list <id> --name <name> [--desc <desc>] [--priority <priority>] [--status <statusId>]');
         console.log('  update-task <taskId> [--name <name>] [--desc <desc>] [--status <status>] [--priority <priority>]');
-        console.log('  search-tasks <query>            Search tasks across team');
+        console.log('  searchTasks <query>            Search tasks across team');
         console.log('');
         console.log('Auth: CLICKUP_TOKEN env var (personal token)');
         console.log(`Team ID: ${TEAM_ID}`);

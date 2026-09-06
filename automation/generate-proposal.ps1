@@ -25,7 +25,7 @@ param(
     [string]$Budget = "TBD",
 
     [Parameter(Mandatory=$false)]
-    [string]$OutputFile = "proposal.md",
+    [string]$OutputFile = "",
 
     [Parameter(Mandatory=$false)]
     [switch]$SkipClickUp
@@ -40,11 +40,13 @@ function Write-Stage {
     Write-Host "`n[STAGE $($Stage.n)] $args" -ForegroundColor Cyan
 }
 
-# Use absolute path based on script location
+# Use script-relative paths
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
-$root = $scriptDir  # automation/ is the root for relative paths
+$root = $scriptDir
 $evidenceDir = Join-Path $root "evidence"
 if (!(Test-Path $evidenceDir)) { New-Item -ItemType Directory -Path $evidenceDir -Force | Out-Null }
+$outputsDir = Join-Path $root "..\evidence"
+if (!(Test-Path $outputsDir)) { New-Item -ItemType Directory -Path $outputsDir -Force | Out-Null }
 $timestamp = Get-Date -Format "yyyy-MM-ddTHH-mm-ssZ"
 
 Write-Host "`n============================================================"
@@ -58,13 +60,15 @@ Write-Stage "Validate prerequisites"
 $missing = @()
 if (-not $env:GEMINI_API_KEY) { $missing += "GEMINI_API_KEY" }
 if (-not $env:CLICKUP_TOKEN -and -not $SkipClickUp) { $missing += "CLICKUP_TOKEN" }
+if ([string]::IsNullOrWhiteSpace($ClientName)) { Write-Error "ClientName is required."; exit 1 }
+if ([string]::IsNullOrWhiteSpace($Service)) { Write-Error "Service is required."; exit 1 }
 if ($missing) {
     Write-Error "Missing env vars: $($missing -join ', '). Aborting."
     exit 1
 }
-Write-Host "  GEMINI_API_KEY  : $($env:GEMINI_API_KEY.Substring(0, [Math]::Min(8, $env:GEMINI_API_KEY.Length)))..."
+Write-Host "  GEMINI_API_KEY  : SET"
 if (-not $SkipClickUp) {
-    Write-Host "  CLICKUP_TOKEN   : $($env:CLICKUP_TOKEN.Substring(0, [Math]::Min(8, $env:CLICKUP_TOKEN.Length)))..."
+    Write-Host "  CLICKUP_TOKEN   : SET"
 }
 Write-Host "  Prerequisites OK"
 
@@ -97,12 +101,33 @@ $body = @{
 } | ConvertTo-Json -Depth 5
 
 $geminiUrl = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=$($env:GEMINI_API_KEY)"
-try {
-    $response = Invoke-RestMethod -Uri $geminiUrl -Method Post -Body $body -ContentType "application/json" -TimeoutSec 60
-    $draft = $response.candidates[0].content.parts[0].text
-    Write-Host "  Gemini draft generated ($($draft.Length) chars)"
-} catch {
-    Write-Error "Gemini API call failed: $($_.Exception.Message)"
+$maxAttempts = 2
+$attempt = 0
+$draft = $null
+while ($attempt -lt $maxAttempts) {
+    $attempt++
+    try {
+        $response = Invoke-RestMethod -Uri $geminiUrl -Method Post -Body $body -ContentType "application/json" -TimeoutSec 60
+        $draft = $response.candidates[0].content.parts[0].text
+        Write-Host "  Gemini draft generated ($($draft.Length) chars)"
+        if ($draft -match '\[.*\]') {
+            Write-Warning "Proposal draft contains placeholder-like text: [$($Matches[0])]. Review before sending."
+        }
+        if (-not $draft.Contains($ClientName)) {
+            Write-Warning "Proposal draft does not contain the client name '$ClientName'. Review before sending."
+        }
+        break
+    } catch {
+        if ($attempt -ge $maxAttempts) {
+            Write-Error "Gemini API call failed after $attempt attempts: $($_.Exception.Message)"
+            exit 1
+        }
+        Write-Warning "Gemini API call failed (attempt $attempt/$maxAttempts): $($_.Exception.Message). Retrying in 5s..."
+        Start-Sleep -Seconds 5
+    }
+}
+if ($null -eq $draft) {
+    Write-Error "Gemini API returned empty draft. Aborting."
     exit 1
 }
 
@@ -140,13 +165,12 @@ if (-not $SkipClickUp) {
 }
 
 # STAGE 5: Write final proposal markdown
-Write-Stage "Write final proposal markdown to $OutputFile"
+Write-Stage "Write final proposal markdown"
+$outputPath = Join-Path $outputsDir "$(Get-Date -Format 'yyyy-MM-dd')-$($ClientName -replace '\s+', '-')-proposal.md"
 if (Test-Path $OutputFile) {
     $outputPath = $OutputFile
-} elseif (Test-Path (Join-Path $root $OutputFile)) {
-    $outputPath = Join-Path $root $OutputFile
-} else {
-    $outputPath = $OutputFile  # use as-is (absolute or relative to CWD)
+} elseif ($OutputFile -ne "proposal.md") {
+    $outputPath = $OutputFile
 }
 @"
 # Proposal: $Service for $ClientName

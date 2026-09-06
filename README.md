@@ -1,157 +1,271 @@
-# Hermes Deliverable 1 — Freelance Software Engineering AI Agentic Stack
+# JUMA — Freelance Software Engineering Agentic OS
 
-**Author:** Hermes Agent (executing on behalf of JUMA Moya)
-**Date:** 2026-09-05
-**Status:** ✅ COMPLETE — All 26 Definition-of-Done items verified
-**Repo:** [BukomaJumaMoya/agentic-os](https://github.com/BukomaJumaMoya/agentic-os)
+**Status:** Step 10 complete — Product documentation active  
+**Architecture:** Hermes-brain, OpenClaw-gateway, specialist agents  
+**Current model:** `stepfun/step-3.7-flash:free` via Nous provider  
+**License:** MIT
 
 ---
 
-## What This Is
+## What It Is
 
-A fully operational freelance software engineering AI agentic stack built for JUMA Moya. Two independent AI runtimes (Hermes and OpenClaw) connected to Telegram, backed by Gemini API (coding/research), ClickUp API (project management), and GitHub (code publishing). Includes a ClickUp API wrapper, a 5-template prompt library, and a working proposal automation pipeline.
+JUMA is a personal freelance software engineering operating system. It automates the path from an unstructured client enquiry to a structured proposal, project record, and approval request — without sending anything externally without human approval.
 
-## What's Inside
+## Problem It Solves
 
-```
-juma-freelance-ai/
-├── automation/
-│   ├── clickup.js              # ClickUp REST API wrapper (Node.js CLI)
-│   ├── generate-proposal.ps1   # Proposal automation (Gemini → ClickUp → file)
-│   └── evidence/               # Gemini proposal drafts (auto-generated)
-├── documentation/
-│   ├── DELIVERABLE-1-COMPLETION-REPORT.md  # §26 final report (this file's big brother)
-│   ├── phase0-output.md        # Environment Reconnaissance
-│   ├── phase1-output.md        # Architecture Validation
-│   ├── phase2-output.md        # Final Stack Design
-│   ├── phase3-output.md        # Hermes Orchestration Model
-│   ├── phase4-output.md        # Specialist Agent Definitions
-│   ├── phase5-output.md        # End-to-End Test Report
-│   ├── phase6-output.md        # Error Handling
-│   ├── phase7-output.md        # Observability
-│   ├── phase8-output.md        # Security Review
-│   ├── phase9-output.md        # Human-in-the-Loop Patterns
-│   └── phase11-output.md       # Definition of Done Audit
-├── prompts/
-│   ├── freelancing-prompts.md  # 5 reusable prompt templates
-│   └── notepad hermes-deliverable-1.md  # Mission directive (authoritative source)
-├── evidence/
-│   ├── proposal-test-acme.md         # Test proposal: Acme Corp
-│   └── proposal-test-beta.md         # Test proposal: Beta Industries
-├── .gitignore
-└── README.md                   # This file
+Freelance client enquiries arrive unstructured and scattered. JUMA classifies the enquiry, selects the right specialist, gathers evidence, prepares a draft proposal, and presents a concise approval request — in approximately five minutes for normal enquiries.
+
+## Target User
+
+Juma Moya — freelance software engineer. The system is opinionated for a single-user, Telegram-first workflow.
+
+## Architecture
+
+```mermaid
+graph TD
+    JUMA[JUMA] --> TELEGRAM[Telegram]
+    TELEGRAM --> OPENCLAW[OpenClaw]
+    OPENCLAW --> HERMES[Hermes]
+    HERMES --> RESEARCH[Research Agent]
+    HERMES --> PROJECTS[Projects Agent]
+    HERMES --> CODING[Coding Agent]
+    RESEARCH --> GEMINI[Gemini]
+    PROJECTS --> CLICKUP[ClickUp]
+    CODING --> GITHUB[GitHub]
 ```
 
-## Quick Start
+### Hermes
+Primary agentic brain. Understands objectives, maintains task state, reasons about what needs to happen, decides which specialist agents and tools are appropriate, observes results, verifies results, adapts/retries/replans when necessary, and prepares approval requests for Juma.
+
+### OpenClaw
+Communication gateway. Receives and routes user interactions from Telegram. Must not become a competing autonomous brain. May delegate to Hermes.
+
+### Telegram
+Human communication interface. Two bots are configured:
+- Hermes bot: `8917859111` — allowlist `1360833951`
+- OpenClaw bot: `8845344838` — allowlist `1360833951`
+
+### Research Agent
+Standalone Python process. Bounded research and evidence gathering only. Distinguishes facts, assumptions, and unknowns. Returns structured JSON. Forbidden from external business actions.
+
+### Projects Agent
+Standalone Node.js process. Bounded ClickUp/project-management operations. Respects READ vs INTERNAL WRITE vs EXTERNAL ACTION authority levels. Must not become the global orchestrator.
+
+### Coding Agent
+Standalone Python process. Bounded software-engineering responsibilities only. Applies J15 verification:
+1. Syntax check always
+2. Run available tests when tests exist or were created
+3. Safely execute a trivial/diagnostic entry point when appropriate
+
+### Gemini
+Coding/research/proposal capability where appropriate. It is a capability available to the system, not the system's architectural brain.
+
+### ClickUp
+Project/task management system. Integrated via REST API wrapper.
+
+### GitHub
+Source control and code delivery. Integrated via `gh` CLI.
+
+## Human Approval Boundary
+
+The system enforces three explicit authority levels:
+
+- **READ** — inspect information; research; analyse; retrieve data
+- **INTERNAL WRITE** — create/update internal working state; drafts; local files; internal project information
+- **EXTERNAL ACTION** — sending messages externally; publishing; submitting; committing/pushing where consequential; sending proposals to clients
+
+External actions require explicit human approval unless an already-defined safe policy explicitly permits it.
+
+The approval boundary:
+1. Detects when an action requires approval
+2. Describes the proposed action clearly
+3. Presents enough context for Juma to make an informed decision
+4. Stops execution while awaiting approval
+5. Resumes only after an explicit approval signal
+6. Never interprets silence as approval
+7. Never converts an error or timeout into approval
+8. Records the approval decision
+9. Executes only the approved action
+10. Verifies the resulting external state
+11. Reports the result
+
+## Agentic Loop
+
+Every meaningful task follows:
+
+UNDERSTAND → CLASSIFY → IDENTIFY FACTS → IDENTIFY UNKNOWNS → DETERMINE CONSTRAINTS → PLAN → SELECT AGENTS → SELECT TOOLS → EXECUTE → OBSERVE → VERIFY → ADAPT / RETRY / REPLAN → PREPARE RESULT → REQUEST APPROVAL WHEN REQUIRED → WAIT FOR APPROVAL → EXECUTE APPROVED EXTERNAL ACTION → VERIFY OUTCOME → REPORT
+
+The system must not merely execute a predetermined automation script and call that "agentic".
+
+## Security Model
+
+- No secrets in source code, logs, documentation, or responses
+- Secrets are loaded from environment variables or secure stores
+- `.gitignore` excludes `.env`, `config/*.secrets.json`, and evidence files
+- CI grep-check rejects tracked files containing secret patterns
+- Approval boundary prevents accidental external sends
+- Evidence files contain only non-sensitive proposal/business information
+
+## How To Run The System
 
 ### Prerequisites
+- Python 3.11+
+- Node.js 20+
+- Git
+- Hermes Agent runtime
+- OpenClaw gateway
+- Telegram bots configured
 
-- Windows 11
-- Node.js v24.19.0 (at `D:\Bukoma Juma Moya\Program Files\Node\node.exe`)
-- PowerShell 5.1+
-- Hermes gateway running (`hermes gateway start`)
-- OpenClaw gateway running (`node "...\dist\index.js" gateway --port 18789`)
-
-### Credentials (must be configured before use)
-
-All credentials are stored in `C:\Users\HP\AppData\Local\hermes\.env`:
-
-```env
-TELEGRAM_BOT_TOKEN=<your-telegram-bot-token>
-GEMINI_API_KEY=<your-gemini-api-key>
-CLICKUP_TOKEN=<your-clickup-personal-token>
-GEMINI_CLI_TRUST_WORKSPACE=true
-```
-
-OpenClaw credentials are in `C:\Users\HP\.openclaw\openclaw.json` (auth profiles + Telegram channel).
-
-### Running the Proposal Automation
-
-```powershell
-# From the automation/ directory:
-.\generate-proposal.ps1 `
-  -ClientName "Acme Corp" `
-  -Service "Web Application Development" `
-  -Budget "$5,000" `
-  -OutputFile "../evidence/proposal-acme.md"
-```
-
-This will:
-1. Validate Gemini + ClickUp credentials
-2. Generate a proposal draft via Gemini API (gemini-3.6-flash)
-3. Save the draft to `automation/evidence/`
-4. Create a ClickUp task in the Projects list (Freelance space)
-5. Write the final proposal to the output file
-
-### Using the ClickUp Wrapper
-
+### Environment Setup
 ```bash
-# List all spaces
-node clickup.js list-spaces
+# Hermes runtime
+export TELEGRAM_BOT_TOKEN="..."
+export GEMINI_API_KEY="..."
+export CLICKUP_TOKEN="..."
 
-# List lists in the Freelance space
-node clickup.js list-lists --space=1200430000003358
-
-# Create a task
-node clickup.js create-task --list=1200430000004210 --name="New Task" --priority=1
-
-# Search for tasks
-node clickup.js search-tasks "proposal"
+# OpenClaw runtime
+export OPENROUTER_API_KEY="..."
 ```
 
-### Using the Prompt Library
+### Run Specialist Agents
+```bash
+# Research Agent
+python agents/research/main.py <<< '{"query":"competitor analysis","max_sources":3,"fetch_content":true}'
 
-The 5 prompt templates are in `prompts/freelancing-prompts.md`. Each template has placeholders, usage notes, and examples. Load the relevant template, fill in the placeholders, and send to Hermes or OpenClaw via Telegram.
+# Projects Agent
+node agents/projects/main.js '{"action":"search_tasks","query":"proposal"}'
 
-## Components
+# Coding Agent
+python agents/coding/main.py <<< '{"action":"explain","code":"def f(x): return x*2","language":"python"}'
+```
 
-| Component | Role | Status |
-|-----------|------|--------|
-| Hermes Gateway | Orchestrator + primary Telegram UI | ✅ Running |
-| OpenClaw Gateway | Fallback model access + secondary Telegram UI | ✅ Running |
-| Gemini API | Coding agent + proposal drafting | ✅ Operational |
-| ClickUp API | Project/task management | ✅ Operational |
-| GitHub CLI | Code publishing | ✅ Authenticated |
-| ClickUp Wrapper | REST API CLI for Hermes | ✅ Built + tested |
-| Prompt Library | 5 reusable templates | ✅ Created |
-| Proposal Automation | End-to-end pipeline | ✅ Built + tested (2 runs) |
+### Run Orchestrator
+```bash
+python orchestrator/orchestrator.py <<< '{"task":"Research competitor pricing for SaaS CRMs"}'
+```
 
-## End-to-End Tests
+### Run Flagship Workflow
+```bash
+python orchestrator/flagship.py <<< '{"enquiry":"Hi, I need a web app. Budget $10k, timeline 2 months."}'
+```
 
-5 tests executed, all PASS:
+## How To Test It
 
-1. ClickUp wrapper create+read ✅
-2. Gemini API direct call ✅
-3. Proposal automation (Gemini → file) ✅
-4. Proposal automation (Gemini → ClickUp → file) ✅
-5. OpenClaw Telegram → Solar Pro4 → Telegram ✅
+### Local Test Commands
+```bash
+# Approval boundary tests
+PYTHONPATH=. python tests/test_step6_approval.py
 
-See `documentation/phase5-output.md` for full test details.
+# Flagship unit tests
+PYTHONPATH=. python tests/test_step7_flagship_unit.py
 
-## Definition of Done
+# Flagship end-to-end tests
+PYTHONPATH=. python tests/test_step7_flagship_e2e.py
 
-**26/26 items complete.** See `documentation/phase11-output.md` for the full audit.
+# Flagship failure-injection tests
+PYTHONPATH=. python tests/test_step7_flagship_failures.py
+
+# Integration tests
+PYTHONPATH=. python tests/test_step7_flagship_integration.py
+
+# Syntax checks
+python -m py_compile agents/research/main.py agents/coding/main.py orchestrator/orchestrator.py orchestrator/approval.py orchestrator/flagship.py
+node --check agents/projects/main.js automation/clickup.js
+```
+
+### CI Pipeline
+Push to `master` to trigger GitHub Actions `quality` workflow. It runs:
+- Repository integrity/secret scan
+- Python/Node.js/PowerShell syntax checks
+- Approval boundary tests
+- Flagship unit, E2E, failure-injection, and integration tests
+- Documentation consistency checks
+
+## Flagship Workflow
+
+1. Receive unstructured client enquiry through Telegram
+2. Understand and classify it
+3. Extract known facts
+4. Identify unknown/missing information
+5. Determine constraints
+6. Decide which specialists/tools are needed
+7. Invoke Research when research is required
+8. Invoke Projects when ClickUp/project records are required
+9. Invoke Coding when technical analysis is required
+10. Synthesise the collected information
+11. Prepare a proposal draft
+12. Verify the proposal
+13. Present Juma with a concise approval request
+14. Wait for explicit approval
+15. Only then perform the approved external action
+16. Verify the result
+17. Report completion
 
 ## Known Limitations
 
-- Copilot CLI installed but unusable (no active subscription) — Gemini is the substitute
-- Gemini CLI headless mode hangs — use API directly for automation
-- OpenClaw Windows service doesn't reliably start on manual `/Run` — use background node process
-- ClickUp token has workspace-wide access (no scoped tokens available)
-- No scheduled automation (Level 3) yet
-- No knowledge base populated yet
+- Research agent uses DuckDuckGo HTML scraping; may break if page layout changes
+- Projects agent uses hard-coded ClickUp team ID
+- Coding agent test execution requires pytest/npm to be installed; skipped if absent
+- OpenClaw → Hermes routing is not yet implemented
+- Approval UI is filesystem-based; no Telegram prompt delivery yet
+- External action execution is boundary-recorded only; not wired to Telegram/OpenClaw yet
+- Classification is keyword-based, not semantic
+- `.approval` directory is local filesystem only
+- Research agent occasionally returns `no_results` without fallback
 
-See `documentation/phase11-output.md` §12 for the full list.
+## Current Model/Runtime Assumptions
 
-## Repository
+- Hermes primary model: `stepfun/step-3.7-flash:free` via Nous provider
+- Node.js: v22+ for Projects agent and automation
+- Python: 3.11+ for Research, Coding, and Orchestrator
+- Windows 11 host; bash-compatible shell for automation
+- No paid LLM subscriptions required; architecture is model-agnostic
 
-- **GitHub:** https://github.com/BukomaJumaMoya/agentic-os
-- **Branch:** master
-- **Commit history:** Clean (fresh init after secret redaction)
-- **Secrets:** None in tracked files (verified via `git grep`)
+## Future Roadmap
 
-## Author
+- Wire OpenClaw → Hermes routing (`hermes chat -q`)
+- Implement Telegram-based approval prompts
+- Implement approved external action execution
+- Add semantic classification for enquiry routing
+- Improve research agent resilience
+- Add coverage measurement to CI
+- Add Windows runner for PowerShell syntax checks
 
-Built by Hermes Agent (Solar Pro4 via Nous Portal OAuth) on behalf of JUMA Moya.
+## Repository Structure
 
-*Report generated 2026-09-05. All claims verified against actual system state.*
+```
+.
+├── agents/
+│   ├── coding/main.py
+│   ├── projects/main.js
+│   └── research/main.py
+├── automation/
+│   ├── clickup.js
+│   └── generate-proposal.ps1
+├── config/
+│   └── juma.json
+├── documentation/
+│   ├── PHASE-1-RECONNAISSANCE-REPORT.md
+│   ├── PHASE-2-DECISIONS.md
+│   ├── PHASE-2-IMPLEMENTATION-PLAN.md
+│   ├── coding-agent.md
+│   ├── projects-agent.md
+│   ├── research-agent.md
+│   └── stack.md
+├── orchestrator/
+│   ├── __init__.py
+│   ├── approval.py
+│   ├── flagship.py
+│   └── orchestrator.py
+├── tests/
+│   ├── test_step6_approval.py
+│   ├── test_step7_flagship_unit.py
+│   ├── test_step7_flagship_e2e.py
+│   ├── test_step7_flagship_failures.py
+│   └── test_step7_flagship_integration.py
+└── .github/workflows/quality.yml
+```
+
+## License
+
+MIT

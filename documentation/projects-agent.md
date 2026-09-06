@@ -81,8 +81,21 @@ Projects output should include:
 
 - **API verified**: Yes (curl test, HTTP 200)
 - **Token configured**: Yes (in Hermes `.env`)
-- **Wrapper script written**: No — to be implemented in Phase 15/16 (Automation)
-- **Tested end-to-end**: No — depends on wrapper
+- **Wrapper script written**: Yes — `automation/clickup.js` exists and is functional
+- **Tested end-to-end**: Yes — verified create/read and search via wrapper
+
+---
+
+## 8. AGENT RUNTIME UPDATE (LOCKED)
+
+Research, Projects, and Coding are no longer Hermes capabilities only.
+They are now standalone separate processes:
+
+- Research agent: Python
+- Projects agent: Node.js
+- Coding agent: Python
+
+This is an implementation change for later phases.
 
 ---
 

@@ -7,7 +7,7 @@
 
 ## 1. ROLE
 
-The Coding Agent is **not a separate process** — it's a **Hermes capability** that delegates code tasks to Gemini (CLI or API). Hermes invokes it when the request is code-related.
+The Coding Agent is a **standalone separate process** that delegates code tasks for Hermes.
 
 Coding handles:
 - Generating code (new files, scripts, functions, components, entire projects)

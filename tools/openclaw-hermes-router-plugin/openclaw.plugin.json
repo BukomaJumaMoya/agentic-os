@@ -1,0 +1,28 @@
+{
+  "id": "openclaw-hermes-router",
+  "name": "OpenClaw Hermes Router",
+  "description": "Route OpenClaw messages to Hermes via hermes chat -q.",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "host": {
+        "type": "string",
+        "description": "Router bind host"
+      },
+      "port": {
+        "type": "number",
+        "description": "Router bind port"
+      }
+    },
+    "additionalProperties": false
+  },
+  "version": "0.1.0",
+  "contracts": {
+    "tools": [
+      "invoke_hermes"
+    ]
+  }
+}

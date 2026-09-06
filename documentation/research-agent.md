@@ -7,7 +7,7 @@
 
 ## 1. ROLE
 
-The Research Agent is **not a separate process** — it's a **Hermes capability** (a set of tools + a prompt pattern) that Hermes uses when the request is research-oriented. Hermes invokes it directly.
+The Research Agent is a **standalone separate process** that performs bounded research tasks for Hermes.
 
 Research answers questions like:
 - "Find competitors for X"

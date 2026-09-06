@@ -1,0 +1,98 @@
+name: quality
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Repository integrity
+        run: |
+          set -euo pipefail
+          # Ensure no tracked secrets by pattern (do not print matches)
+          if grep -RIn --exclude-dir=.git --include='*.json' --include='*.md' --include='*.py' --include='*.js' --include='*.ps1' -E '(GEMINI_API_KEY|CLICKUP_TOKEN|TELEGRAM_BOT_TOKEN|GH_TOKEN|GITHUB_TOKEN|password\s*[:=]|api_key\s*[:=])|(sk-|ghp_|gho_|github_pat_)' .; then
+            echo '::error::Secret pattern detected in tracked files'
+            exit 1
+          fi
+          # Ensure sensitive files are not tracked
+          if git ls-files | grep -E '^\.env$|^config/juma\.secrets\.json$'; then
+            echo '::error::Sensitive file is tracked'
+            exit 1
+          fi
+
+      - name: Syntax checks
+        run: |
+          set -euo pipefail
+          python -m py_compile agents/research/main.py
+          python -m py_compile agents/coding/main.py
+          python -m py_compile orchestrator/orchestrator.py
+          python -m py_compile orchestrator/approval.py
+          python -m py_compile orchestrator/flagship.py
+          python -m py_compile tests/test_step6_approval.py
+          python -m py_compile tests/test_step7_flagship_unit.py
+          python -m py_compile tests/test_step7_flagship_e2e.py
+          python -m py_compile tests/test_step7_flagship_failures.py
+          node --check agents/projects/main.js
+          node --check automation/clickup.js
+          if command -v pwsh >/dev/null 2>&1; then
+            pwsh -NoProfile -Command "\$errors = \$null; \$null = [System.Management.Automation.Language.Parser]::ParseFile('automation/generate-proposal.ps1', [ref]\$null, [ref]\$errors); if (\$errors) { foreach (\$e in \$errors) { Write-Error \$e }; exit 1 } else { Write-Host 'OK' }"
+          else
+            echo 'pwsh not available; skipping PowerShell syntax check on this runner'
+          fi
+
+      - name: Approval boundary tests
+        run: |
+          set -euo pipefail
+          PYTHONPATH=. python tests/test_step6_approval.py
+
+      - name: Flagship unit tests
+        run: |
+          set -euo pipefail
+          PYTHONPATH=. python tests/test_step7_flagship_unit.py
+
+      - name: Flagship end-to-end tests
+        run: |
+          set -euo pipefail
+          PYTHONPATH=. python tests/test_step7_flagship_e2e.py
+
+      - name: Flagship failure-injection tests
+        run: |
+          set -euo pipefail
+          PYTHONPATH=. python tests/test_step7_flagship_failures.py
+
+      - name: Integration tests (safe subset)
+        env:
+          # Prevent accidental external sends by default
+          APPROVAL_MODE: 'true'
+        run: |
+          set -euo pipefail
+          PYTHONPATH=. python tests/test_step7_flagship_integration.py
+
+      - name: Documentation consistency check
+        run: |
+          set -euo pipefail
+          if [ -f README.md ]; then
+            # Ensure README contains current model and completion status markers
+            if ! grep -q 'stepfun/step-3.7-flash:free' README.md; then
+              echo '::warning::README missing current model reference'
+            fi
+            if ! grep -q '26+3/29' README.md; then
+              echo '::warning::README completion count may be stale'
+            fi
+          fi

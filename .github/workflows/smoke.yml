@@ -1,0 +1,16 @@
+name: smoke
+on:
+  push:
+    branches: [ master ]
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: node --check automation/clickup.js
+      - run: node automation/clickup.js --help
+      - run: pwsh -NoProfile -Command "$errors = $null; $null = [System.Management.Automation.Language.Parser]::ParseFile('automation/generate-proposal.ps1', [ref]$null, [ref]$errors); if ($errors) { foreach ($e in $errors) { Write-Error $e }; exit 1 } else { Write-Host 'OK' }"
