@@ -25,8 +25,9 @@ jobs:
       - name: Repository integrity
         run: |
           set -euo pipefail
-          # Ensure no tracked secrets by pattern (do not print matches)
-          if grep -RIn --exclude-dir=.git --include='*.json' --include='*.md' --include='*.py' --include='*.js' --include='*.ps1' -E '(GEMINI_API_KEY|CLICKUP_TOKEN|TELEGRAM_BOT_TOKEN|GH_TOKEN|GITHUB_TOKEN|password\s*[:=]|api_key\s*[:=])|(sk-|ghp_|gho_|github_pat_)' .; then
+          # Ensure no tracked secrets by pattern in implementation/config files.
+          # Documentation may contain redacted references for audit; exclude docs.
+          if grep -RIn --exclude-dir=.git --exclude-dir=documentation --include='*.json' --include='*.md' --include='*.py' --include='*.js' --include='*.ps1' -E '(GEMINI_API_KEY|CLICKUP_TOKEN|TELEGRAM_BOT_TOKEN|GH_TOKEN|GITHUB_TOKEN|password\s*[:=]|api_key\s*[:=])|(sk-|ghp_|gho_|github_pat_)' .; then
             echo '::error::Secret pattern detected in tracked files'
             exit 1
           fi

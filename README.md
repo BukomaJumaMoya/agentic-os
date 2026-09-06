@@ -1,6 +1,6 @@
 # JUMA — Freelance Software Engineering Agentic OS
 
-**Status:** Step 10 complete — Product documentation active  
+**Status:** Integration artifact complete; runtime verified partially  
 **Architecture:** Hermes-brain, OpenClaw-gateway, specialist agents  
 **Current model:** `stepfun/step-3.7-flash:free` via Nous provider  
 **License:** MIT
@@ -206,12 +206,15 @@ Push to `master` to trigger GitHub Actions `quality` workflow. It runs:
 - Research agent uses DuckDuckGo HTML scraping; may break if page layout changes
 - Projects agent uses hard-coded ClickUp team ID
 - Coding agent test execution requires pytest/npm to be installed; skipped if absent
-- OpenClaw → Hermes routing is not yet implemented
+- OpenClaw → Hermes routing plugin artifact is implemented and loaded, but actual Hermes invocation from OpenClaw has not been demonstrated through the installed CLI surface
 - Approval UI is filesystem-based; no Telegram prompt delivery yet
 - External action execution is boundary-recorded only; not wired to Telegram/OpenClaw yet
 - Classification is keyword-based, not semantic
 - `.approval` directory is local filesystem only
 - Research agent occasionally returns `no_results` without fallback
+- Telegram bot token in OpenClaw config returns HTTP 401; Telegram E2E is not testable with current credentials
+- Deterministic all-message routing to Hermes would require a custom OpenClaw channel plugin beyond the installed SDK
+- OpenClaw scheduled task metadata may show stale `Runtime: stopped` even when gateway is healthy
 
 ## Current Model/Runtime Assumptions
 
