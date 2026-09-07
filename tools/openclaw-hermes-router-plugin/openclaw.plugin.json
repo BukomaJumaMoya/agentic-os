@@ -1,7 +1,7 @@
 {
   "id": "openclaw-hermes-router",
   "name": "OpenClaw Hermes Router",
-  "description": "Route OpenClaw messages to Hermes via hermes chat -q.",
+  "description": "Route OpenClaw messages to Hermes via the local Hermes HTTP router.",
   "activation": {
     "onStartup": true
   },

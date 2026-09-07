@@ -1,41 +1,98 @@
 import { defineToolPlugin } from "openclaw/plugin-sdk/tool-plugin";
 import { Type } from "typebox";
+import http from "node:http";
 
-async function invokeHermes(message) {
-  const cmd = "hermes";
-  const args = ["chat", "-q", message];
-  const proc = new Process(cmd, {
-    args,
-    env: { ...process.env, HOME: process.env.HOME || "C:\\Users\\HP" },
-  });
+const DEFAULT_ROUTER_HOST = "127.0.0.1";
+const DEFAULT_ROUTER_PORT = 18790;
+const DEFAULT_TIMEOUT_MS = 90_000;
 
-  let stdout = "";
-  let stderr = "";
-  proc.stdout.on("data", (chunk) => {
-    stdout += chunk.toString();
-  });
-  proc.stderr.on("data", (chunk) => {
-    stderr += chunk.toString();
-  });
+function request(host, port, path, body, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  return new Promise((resolve, reject) => {
+    const payload = JSON.stringify(body);
+    const req = http.request(
+      {
+        hostname: host,
+        port,
+        path,
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(payload),
+        },
+      },
+      (res) => {
+        const chunks = [];
+        res.on("data", (chunk) => chunks.push(chunk));
+        res.on("end", () => {
+          const text = Buffer.concat(chunks).toString("utf-8");
+          resolve({ status: res.statusCode, headers: res.headers, body: text });
+        });
+        res.on("error", reject);
+      }
+    );
 
-  await proc.exited;
-  const trimmed = stdout.trim();
-  if (proc.exitCode === 0 && trimmed) {
-    return { ok: true, reply: trimmed, stderr: stderr.trim(), returnCode: proc.exitCode };
+    req.on("error", reject);
+
+    const timer = setTimeout(() => {
+      reject(new Error(`Router request timed out after ${timeoutMs}ms`));
+      req.destroy();
+    }, timeoutMs);
+
+    req.on("response", () => clearTimeout(timer));
+
+    req.write(payload);
+    req.end();
+  });
+}
+
+async function invokeHermesViaRouter(message) {
+  const host = process.env.OPENCLAW_HERMES_ROUTER_HOST || DEFAULT_ROUTER_HOST;
+  const port = parseInt(process.env.OPENCLAW_HERMES_ROUTER_PORT || String(DEFAULT_ROUTER_PORT), 10);
+  const path = "/invoke";
+
+  let lastError = null;
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const { status, body } = await request(host, port, path, { message });
+
+      if (status !== 200) {
+        lastError = `Router returned HTTP ${status}: ${body.slice(0, 500)}`;
+        continue;
+      }
+
+      let data;
+      try {
+        data = JSON.parse(body);
+      } catch {
+        lastError = `Router returned non-JSON response: ${body.slice(0, 500)}`;
+        continue;
+      }
+
+      if (typeof data.ok !== "boolean") {
+        lastError = `Router returned non-structured response: ${JSON.stringify(data).slice(0, 500)}`;
+        continue;
+      }
+
+      return data;
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      lastError = `Router request failed: ${reason}`;
+    }
   }
 
   return {
     ok: false,
     reply: "",
-    stderr: stderr.trim() || `Empty output from hermes (exit ${proc.exitCode})`,
-    returnCode: proc.exitCode,
+    stderr: lastError || "Hermes router unavailable",
+    returnCode: -1,
   };
 }
 
 export default defineToolPlugin({
   id: "openclaw-hermes-router",
   name: "OpenClaw Hermes Router",
-  description: "Route OpenClaw messages to Hermes via hermes chat -q.",
+  description: "Route OpenClaw messages to Hermes via the local Hermes HTTP router.",
   configSchema: Type.Object(
     {
       host: Type.Optional(Type.String({ description: "Router bind host" })),
@@ -59,7 +116,7 @@ export default defineToolPlugin({
         },
         { additionalProperties: false }
       ),
-      async execute(_id, params) {
+      async execute(params, _config, _context) {
         if (!params?.message || typeof params.message !== "string" || !params.message.trim()) {
           return {
             ok: false,
@@ -80,7 +137,7 @@ export default defineToolPlugin({
         }
 
         try {
-          return await invokeHermes(trimmed);
+          return await invokeHermesViaRouter(trimmed);
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           return {

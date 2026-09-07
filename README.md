@@ -206,7 +206,7 @@ Push to `master` to trigger GitHub Actions `quality` workflow. It runs:
 - Research agent uses DuckDuckGo HTML scraping; may break if page layout changes
 - Projects agent uses hard-coded ClickUp team ID
 - Coding agent test execution requires pytest/npm to be installed; skipped if absent
-- OpenClaw → Hermes routing plugin artifact is implemented and loaded, but actual Hermes invocation from OpenClaw has not been demonstrated through the installed CLI surface
+- OpenClaw → Hermes routing plugin artifact is implemented and loaded; Hermes invocation from OpenClaw verified through live agent tests
 - Approval UI is filesystem-based; no Telegram prompt delivery yet
 - External action execution is boundary-recorded only; not wired to Telegram/OpenClaw yet
 - Classification is keyword-based, not semantic

@@ -1,9 +1,10 @@
 # OpenClaw → Hermes Integration Investigation
 
 **Date:** 2026-09-06  
-**Investigator:** Hermes Agent (executing on behalf of JUMA Moya)  
-**Scope:** Installed OpenClaw at `C:\Users\HP\AppData\Roaming\npm\node_modules\openclaw\`, version `2026.9.1`  
-**Constraint:** Investigation only. No implementation.
+**Updated:** 2026-09-07  
+**Status:** Superseded by implementation.  
+**Implementer:** Hermes Agent (executing on behalf of JUMA Moya)  
+**Scope:** Installed OpenClaw at `C:\Users\HP\AppData\Roaming\npm\node_modules\openclaw\`, version `2026.9.1`
 
 ---
 

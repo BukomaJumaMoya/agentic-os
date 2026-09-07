@@ -17,3 +17,4 @@ openclaw-agent.sqlite
 *.sqlite-wal
 __pycache__/
 *.pyc
+.openclaw/

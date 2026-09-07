@@ -12,6 +12,7 @@ const { spawn } = require('node:child_process');
 
 const PORT = parseInt(process.env.OPENCLAW_HERMES_ROUTER_PORT || '18790', 10);
 const HOST = process.env.OPENCLAW_HERMES_ROUTER_HOST || '127.0.0.1';
+const HERMES_TIMEOUT_MS = parseInt(process.env.OPENCLAW_HERMES_TIMEOUT_MS || '120000', 10);
 
 async function invokeHermes(message, retries = 2) {
   const args = ['chat', '-q', message];
@@ -23,16 +24,35 @@ async function invokeHermes(message, retries = 2) {
     try {
       const proc = spawn('hermes', args, {
         stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env, HOME: process.env.HOME || 'C:\Users\HP' },
+        env: { ...process.env, HOME: process.env.HOME || 'C:\\Users\\HP' },
       });
 
       let stdout = '';
       let stderr = '';
+      let settled = false;
+
+      const timer = setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          proc.kill('SIGTERM');
+          setTimeout(() => {
+            if (!proc.killed) proc.kill('SIGKILL');
+          }, 5000);
+        }
+      }, HERMES_TIMEOUT_MS);
+
       proc.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
       proc.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
 
       const exitCode = await new Promise((resolve) => {
-        proc.on('close', resolve);
+        proc.on('close', (code) => {
+          clearTimeout(timer);
+          resolve(code);
+        });
+        proc.on('error', (err) => {
+          clearTimeout(timer);
+          resolve(-1);
+        });
       });
 
       const trimmed = stdout.trim();
@@ -58,6 +78,7 @@ async function handleRequest(req, res) {
 
   let body = '';
   req.on('data', (chunk) => { body += chunk.toString(); });
+
   req.on('end', async () => {
     let payload = {};
     try {
@@ -88,5 +109,6 @@ server.listen(PORT, HOST, () => {
 });
 
 process.on('SIGINT', () => {
+  process.stdout.write('OPENCLAW_HERMES_ROUTER_SHUTDOWN\n');
   server.close(() => process.exit(0));
 });

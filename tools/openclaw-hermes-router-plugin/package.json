@@ -4,7 +4,7 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "build": "tsc",
+    "build": "Copy-Item .\\src\\index.js .\\dist\\index.js -Force",
     "plugin:build": "npm run build && openclaw plugins build --entry ./dist/index.js",
     "plugin:validate": "npm run build && openclaw plugins validate --entry ./dist/index.js"
   },
