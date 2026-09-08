@@ -268,7 +268,3 @@ Push to `master` to trigger GitHub Actions `quality` workflow. It runs:
 │   └── test_step7_flagship_integration.py
 └── .github/workflows/quality.yml
 ```
-
-## License
-
-MIT
