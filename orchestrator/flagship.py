@@ -237,9 +237,15 @@ def run_workflow(enquiry: str, approval_mode: bool = True, force_agent: str = No
     proposal_id = proposal.get("proposal_id")
     approval_record = None
     request_id = None
+    telegram_prompt = None
     if approval_mode:
         approval_record = request_approval(proposal, enquiry)
         request_id = approval_record.get("request_id")
+        try:
+            from orchestrator.telegram_approval import send_approval_prompt
+            telegram_prompt = send_approval_prompt(request_id, proposal)
+        except Exception as e:
+            telegram_prompt = {"sent": False, "reason": str(e)}
 
     external_action = {
         "type": "send_proposal",
@@ -249,6 +255,7 @@ def run_workflow(enquiry: str, approval_mode: bool = True, force_agent: str = No
         "requires_approval": True,
         "idempotency_key": request_id,
         "retry_safe": True,
+        "telegram_prompt": telegram_prompt,
     }
     external_actions.append(external_action)
 
@@ -281,6 +288,10 @@ def run_workflow(enquiry: str, approval_mode: bool = True, force_agent: str = No
         "recovery": {
             "resume_with": "Use approval.request_id with resume_if_approved(request_id) after human decision.",
             "do_not_retry_external_action_automatically": True,
+            "telegram_commands": [
+                f"APPROVE {request_id}",
+                f"REJECT {request_id}",
+            ] if request_id else [],
         },
     }
 

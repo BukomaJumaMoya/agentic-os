@@ -2,7 +2,7 @@
 
 **Status:** Integration artifact complete; runtime verified partially  
 **Architecture:** Hermes-brain, OpenClaw-gateway, specialist agents  
-**Current model:** `stepfun/step-3.7-flash:free` via Nous provider  
+**Current model:** `google/gemini-3.5-flash` via OpenRouter with fallback `openrouter/nvidia/nemotron-3.5-lightning:free`  
 **License:** MIT
 
 ---
@@ -218,7 +218,7 @@ Push to `master` to trigger GitHub Actions `quality` workflow. It runs:
 
 ## Current Model/Runtime Assumptions
 
-- Hermes primary model: `stepfun/step-3.7-flash:free` via Nous provider
+- Hermes primary model: `google/gemini-3.5-flash` via OpenRouter with fallback `openrouter/nvidia/nemotron-3.5-lightning:free`
 - Node.js: v22+ for Projects agent and automation
 - Python: 3.11+ for Research, Coding, and Orchestrator
 - Windows 11 host; bash-compatible shell for automation

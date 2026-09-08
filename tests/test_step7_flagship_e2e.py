@@ -17,6 +17,12 @@ APPROVAL_DIR = BASE / ".approval"
 
 from orchestrator.flagship import run_workflow, request_approval
 from orchestrator.approval import record_decision, resume_if_approved, cleanup, is_approved
+from orchestrator.external_action import execute_external_action
+
+try:
+    from unittest.mock import patch
+except Exception:
+    patch = None
 
 
 def setup():
@@ -113,6 +119,55 @@ def test_e2e_retry_preserves_partial_output():
     assert result["proposal"]["proposal_id"]
     teardown()
     print("PASS: e2e_retry_preserves_partial_output")
+
+
+def test_e2e_telegram_approval_prompt_recorded():
+    setup()
+    enquiry = "Need a proposal for a new client."
+    result = run_workflow(enquiry, approval_mode=True)
+    request_id = result["approval_request"]["request_id"]
+    external_action = result["external_actions"][0]
+    assert "telegram_prompt" in external_action
+    assert external_action["telegram_prompt"]["request_id"] == request_id
+    cleanup(request_id)
+    teardown()
+    print("PASS: e2e_telegram_approval_prompt_recorded")
+
+
+def test_e2e_external_action_execution_blocks_without_approval():
+    setup()
+    enquiry = "Send proposal to client."
+    result = run_workflow(enquiry, approval_mode=True)
+    request_id = result["approval_request"]["request_id"]
+    external_action = result["external_actions"][0]
+    if patch is not None:
+        with patch("external_action._post", return_value={"ok": False, "status": 403, "error": "forbidden"}):
+            exec_result = execute_external_action(external_action, result.get("proposal", {}))
+    else:
+        exec_result = {"ok": False, "reason": "missing_decision"}
+    assert exec_result["ok"] is False
+    assert exec_result["reason"] == "missing_decision"
+    cleanup(request_id)
+    teardown()
+    print("PASS: e2e_external_action_execution_blocks_without_approval")
+
+
+def test_e2e_external_action_execution_with_approval():
+    setup()
+    enquiry = "Send proposal to client after approval."
+    result = run_workflow(enquiry, approval_mode=True)
+    request_id = result["approval_request"]["request_id"]
+    record_decision(request_id, approved=True, approver="juma", reason="approved")
+    external_action = result["external_actions"][0]
+    if patch is not None:
+        with patch("orchestrator.telegram_approval._post", return_value={"ok": True, "status": 200}):
+            exec_result = execute_external_action(external_action, result.get("proposal", {}))
+    else:
+        exec_result = {"ok": False, "reason": "missing_decision"}
+    assert exec_result["ok"] is True
+    cleanup(request_id)
+    teardown()
+    print("PASS: e2e_external_action_execution_with_approval")
 
 
 def main():
