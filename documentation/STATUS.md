@@ -39,8 +39,25 @@ evidence that something works, was tested, or was completed. To use a claim
 from one, reconfirm it independently against the current code and the running
 system first, and record what you found. Assume unreconfirmed claims are false.
 
-## Debugging a silent gateway exit
+## Gateway startup: `--task-supervisor` removed
 
-Check `C:\Users\HP\AppData\Local\Temp\openclaw\openclaw-<date>.log` first. The
-scheduled task launches the gateway with `--task-supervisor`, which discards its
-stdout, so a failed start leaves nothing in the task result or `~/.openclaw/logs/`.
+`C:\Users\HP\.openclaw\gateway.cmd` no longer passes `--task-supervisor`.
+That flag routes startup through OpenClaw's Windows job-anchor path, which
+**fails to bind port 18789 for a still-unidentified reason inside its
+FFI/`CreateProcessW` layer**: the gateway child exits 0 before its logging
+subsystem initialises, so it produces no output anywhere. Ruled out by
+testing: argument quoting, the environment block, the `koffi` native
+dependency, port/lock contention, log capture, and stdio completion
+signalling (`stdio[1]` patched to `"pipe"` — no effect, reverted). Running
+without the flag has bound reliably in every test, so it is the current
+stable approach; Task Scheduler's own `RestartCount`/`RestartInterval`
+policy is the supervision layer instead of the job object.
+
+Caveat: `dist/schtasks-Cnaz4sRo.js:258` re-appends the flag unconditionally
+whenever the launcher is regenerated, so `openclaw gateway install` or an
+update will silently undo this. Re-check `gateway.cmd` after either.
+
+When a startup does fail silently, check
+`C:\Users\HP\AppData\Local\Temp\openclaw\openclaw-<date>.log` first — it is
+separate from `~/.openclaw/logs/` and is where the gateway's own diagnostics
+land.
