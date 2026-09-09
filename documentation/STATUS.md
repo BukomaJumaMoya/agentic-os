@@ -38,3 +38,9 @@ Treat every archived document as historical and unverified. Do not cite it as
 evidence that something works, was tested, or was completed. To use a claim
 from one, reconfirm it independently against the current code and the running
 system first, and record what you found. Assume unreconfirmed claims are false.
+
+## Debugging a silent gateway exit
+
+Check `C:\Users\HP\AppData\Local\Temp\openclaw\openclaw-<date>.log` first. The
+scheduled task launches the gateway with `--task-supervisor`, which discards its
+stdout, so a failed start leaves nothing in the task result or `~/.openclaw/logs/`.

@@ -22,7 +22,8 @@
   "version": "0.1.0",
   "contracts": {
     "tools": [
-      "invoke_hermes"
+      "invoke_hermes",
+      "telegram_approval_command"
     ]
   }
 }
