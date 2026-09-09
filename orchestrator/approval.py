@@ -298,6 +298,16 @@ def resume_if_approved(request_id: str) -> dict:
 
 
 def cleanup(request_id: str):
-    for p in [_request_path(request_id), _decision_path(request_id)]:
+    """Remove every artifact for a request: request, decision, and evidence.
+
+    The evidence file was previously left behind, so callers that expected a
+    clean slate -- including every test suite's teardown -- silently
+    accumulated proposal JSON.
+    """
+    for p in [
+        _request_path(request_id),
+        _decision_path(request_id),
+        EVIDENCE_DIR / f"{request_id}-proposal.json",
+    ]:
         if p.exists():
             p.unlink()
