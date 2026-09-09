@@ -39,6 +39,25 @@ evidence that something works, was tested, or was completed. To use a claim
 from one, reconfirm it independently against the current code and the running
 system first, and record what you found. Assume unreconfirmed claims are false.
 
+## Follow-up: `external_action.py` sends are still on the dead route
+
+`external_action.py`'s `send_proposal` and `send_message` branches still POST
+`{to, text, approval_request_id}` to `/message/send`, which does not exist —
+the gateway has no REST message route and returns 404. They are unreachable
+from any production path: nothing wires `execute_external_action` to a live
+caller (`flagship.py` never calls it; only `resume.py` and a stdin `main()`
+do). Three tests in `test_step7_flagship_e2e.py` do call it behind a `patch()`
+of `_post`, but the file's `main()` runner never invokes those three, so under
+the normal script runner they do not execute at all — a passing suite is not
+evidence this path works, and neither is the presence of those tests.
+
+Follow-up: migrate both branches to the same
+`conversations_list` / `conversations_send` flow used by
+`telegram_approval.send_approval_prompt`, and update the tests' patch targets
+(`external_action._post`, `orchestrator.telegram_approval._post`) at the same
+time — under pytest, which does collect them, they would otherwise start
+making real, failing network calls.
+
 ## Gateway startup: `--task-supervisor` removed
 
 `C:\Users\HP\.openclaw\gateway.cmd` no longer passes `--task-supervisor`.

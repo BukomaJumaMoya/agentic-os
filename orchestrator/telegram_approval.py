@@ -23,6 +23,24 @@ except ImportError:  # imported bare, with orchestrator/ on sys.path (tests)
 
 ConfigError = _approval.ConfigError
 
+# The gateway has no REST message route. Outbound delivery goes through the
+# tool-invocation endpoint, addressed by an opaque conversationRef rather than
+# by channel+chat-id. Both tool schemas are additionalProperties:false, so the
+# args below must contain exactly the documented fields and nothing else.
+TOOLS_INVOKE_PATH = "/tools/invoke"
+
+# conversations_send returns one of four delivery statuses. Only "sent" is a
+# confirmed delivery; the other three are distinct non-deliveries and are kept
+# verbatim rather than collapsed into a generic failure.
+_NOT_DELIVERED_REASON = {
+    "queued": "queued by the gateway; not confirmed delivered",
+    "suppressed": "suppressed by the gateway; not delivered",
+    "unknown": "gateway reported delivery status 'unknown'; not confirmed delivered",
+}
+
+_CONVERSATION_CACHE_PATH = _approval.APPROVAL_DIR / ".conversation-cache.json"
+_conversation_ref_memo = {}
+
 
 def _gateway_url() -> str:
     return _approval.gateway_url()
@@ -67,6 +85,133 @@ def _post(path: str, payload: dict, timeout: int = 30) -> dict:
         return {"ok": False, "status": int(e.code), "error": body}
     except Exception as e:
         return {"ok": False, "status": 0, "error": str(e)}
+
+
+def _unwrap_tool_result(result):
+    """Unwrap the tool layer's jsonResult() envelope to the payload dict.
+
+    The exact nesting is not pinned down in the bundle, so this peels a couple
+    of plausible wrapper keys and returns the value unchanged once it already
+    looks like the payload.
+    """
+    for _ in range(3):
+        if not isinstance(result, dict) or "conversations" in result or "status" in result:
+            break
+        for key in ("json", "result", "value", "data"):
+            inner = result.get(key)
+            if isinstance(inner, (dict, list)):
+                result = inner
+                break
+        else:
+            break
+    return result
+
+
+def _invoke_tool(name: str, args: dict, timeout: int = 30) -> dict:
+    """POST one tool invocation to /tools/invoke.
+
+    Returns a normalised envelope {http_status, ok, result, error} so callers
+    can tell transport failure, gateway rejection and tool outcome apart.
+    """
+    headers = {"Content-Type": "application/json"}
+    try:
+        headers["Authorization"] = f"Bearer {_approval.gateway_token()}"
+    except ConfigError as e:
+        return {"http_status": 0, "ok": False, "result": None,
+                "error": f"missing gateway token: {e}"}
+    body = json.dumps({"name": name, "args": args}).encode("utf-8")
+    req = urllib.request.Request(
+        f"{_gateway_url()}{TOOLS_INVOKE_PATH}", data=body, headers=headers, method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8")
+            status = int(resp.status)
+    except urllib.error.HTTPError as e:
+        try:
+            raw = e.read().decode("utf-8")
+        except Exception:
+            raw = ""
+        return {"http_status": int(e.code), "ok": False, "result": None,
+                "error": raw or f"HTTP {e.code}"}
+    except Exception as e:
+        return {"http_status": 0, "ok": False, "result": None, "error": str(e)}
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return {"http_status": status, "ok": False, "result": None,
+                "error": f"non-JSON response: {raw[:300]}"}
+    if not parsed.get("ok"):
+        return {"http_status": status, "ok": False, "result": None,
+                "error": json.dumps(parsed.get("error") or parsed)[:500]}
+    return {"http_status": status, "ok": True,
+            "result": _unwrap_tool_result(parsed.get("result")), "error": None}
+
+
+def _load_cached_ref(user_id: str):
+    if user_id in _conversation_ref_memo:
+        return _conversation_ref_memo[user_id]
+    try:
+        cache = json.loads(_CONVERSATION_CACHE_PATH.read_text())
+    except Exception:
+        return None
+    ref = (cache or {}).get(user_id) if isinstance(cache, dict) else None
+    if isinstance(ref, str) and ref:
+        _conversation_ref_memo[user_id] = ref
+        return ref
+    return None
+
+
+def _store_cached_ref(user_id: str, ref: str) -> None:
+    _conversation_ref_memo[user_id] = ref
+    try:
+        _approval.APPROVAL_DIR.mkdir(parents=True, exist_ok=True)
+        try:
+            cache = json.loads(_CONVERSATION_CACHE_PATH.read_text())
+        except Exception:
+            cache = {}
+        if not isinstance(cache, dict):
+            cache = {}
+        cache[user_id] = ref
+        _CONVERSATION_CACHE_PATH.write_text(json.dumps(cache, indent=2))
+    except Exception:
+        pass  # the cache is an optimisation; never fail a send over it
+
+
+def resolve_conversation_ref(user_id: str, use_cache: bool = True):
+    """Return (conversationRef, problem) for the allowlisted Telegram DM.
+
+    problem is None on success. "no_conversation_found" is a precondition, not
+    a transport failure: the gateway only knows a conversation once it has seen
+    one, and there is no API to create one. Callers must not retry it.
+    """
+    if use_cache:
+        cached = _load_cached_ref(str(user_id))
+        if cached:
+            return cached, None
+    listed = _invoke_tool("conversations_list", {"channel": "telegram"})
+    if not listed["ok"]:
+        return None, {"reason": "conversations_list_failed",
+                      "detail": listed["error"], "http_status": listed["http_status"]}
+    payload = listed["result"]
+    conversations = payload.get("conversations") if isinstance(payload, dict) else None
+    if not isinstance(conversations, list):
+        return None, {"reason": "conversations_list_unexpected_shape",
+                      "detail": str(payload)[:300], "http_status": listed["http_status"]}
+    for item in conversations:
+        if not isinstance(item, dict) or item.get("kind") != "direct":
+            continue
+        if str(item.get("target", "")).strip() != str(user_id):
+            continue
+        ref = item.get("conversationRef")
+        if isinstance(ref, str) and ref:
+            _store_cached_ref(str(user_id), ref)
+            return ref, None
+    return None, {"reason": "no_conversation_found",
+                  "detail": (f"no kind='direct' telegram conversation with target={user_id}; "
+                             "the gateway only learns a conversation after seeing it"),
+                  "http_status": listed["http_status"],
+                  "conversations_seen": len(conversations)}
 
 
 def send_approval_prompt(request_id: str, proposal: dict) -> dict:
@@ -127,18 +272,39 @@ def send_approval_prompt(request_id: str, proposal: dict) -> dict:
         recipient = _allowed_user_id()
     except ConfigError as e:
         return {"sent": False, "channel": "telegram", "request_id": request_id,
+                "delivery_status": "not_attempted",
                 "reason": f"allowlist not configured: {e}"}
 
-    payload = {
-        "to": recipient,
-        "text": text,
-        "approval_request_id": request_id,
-    }
+    conversation_ref, problem = resolve_conversation_ref(recipient)
+    if problem is not None:
+        # Precondition failure, not a transport error. Do not retry.
+        result = problem
+        delivery_status = "not_attempted"
+        reason = problem["reason"]
+        conversation_ref = None
+    else:
+        invocation = _invoke_tool(
+            "conversations_send",
+            {"conversationRef": conversation_ref, "message": text},
+        )
+        result = invocation
+        status = invocation["result"].get("status") if (
+            invocation["ok"] and isinstance(invocation["result"], dict)) else None
+        if not invocation["ok"]:
+            delivery_status = "invoke_failed"
+            reason = invocation["error"] or f"HTTP {invocation['http_status']}"
+        elif status == "sent":
+            delivery_status = "sent"
+            reason = None
+        elif status in _NOT_DELIVERED_REASON:
+            delivery_status = status  # queued | suppressed | unknown, verbatim
+            reason = _NOT_DELIVERED_REASON[status]
+        else:
+            delivery_status = "unrecognised_status"
+            reason = f"conversations_send returned status={status!r}"
 
-    result = _post("/message/send", payload)
-
-    sent = bool(result.get("ok")) or int(result.get("status", 0)) == 200
-    state = "sent" if sent else "failed"
+    sent = delivery_status == "sent"
+    state = delivery_status
     state_write_error = None
     try:
         if request_path.exists():
@@ -154,16 +320,19 @@ def send_approval_prompt(request_id: str, proposal: dict) -> dict:
         state_write_error = str(e)
 
     if sent:
-        out = {"sent": True, "channel": "telegram", "request_id": request_id, "result": result}
+        out = {"sent": True, "channel": "telegram", "request_id": request_id,
+               "delivery_status": delivery_status,
+               "conversation_ref": conversation_ref, "result": result}
     else:
-        # `result.get("error") or result.get("error")` was a typo: a non-2xx
-        # response with no error body yielded reason=None, which reads as
-        # "no problem". Always give a concrete reason.
+        # Every non-delivery keeps its own distinguishable delivery_status;
+        # queued / suppressed / unknown are never collapsed into one string.
         out = {
             "sent": False,
             "channel": "telegram",
             "request_id": request_id,
-            "reason": result.get("error") or f"gateway returned status {result.get('status')}",
+            "delivery_status": delivery_status,
+            "conversation_ref": conversation_ref,
+            "reason": reason,
             "result": result,
         }
     if state_write_error:
