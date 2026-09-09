@@ -12,7 +12,6 @@ Authority boundary:
 import sys
 import json
 import subprocess
-import os
 from pathlib import Path
 
 AGENT = "orchestrator"
@@ -77,7 +76,6 @@ def needs_coding(task):
 
 
 def invoke(agent_name, payload, retries=2):
-    from orchestrator.approval import resume_if_approved
     if agent_name not in AGENTS:
         return None, f"Rejected unknown agent: {agent_name}"
     cfg = AGENTS[agent_name]
@@ -143,7 +141,7 @@ def build_plan(task):
 
 
 def execute_plan(plan, approval_mode=True):
-    from orchestrator.approval import enforce, resume_if_approved
+    from orchestrator.approval import enforce
     executions = []
     pending_approval = {}
     for step in plan.get("steps", []):

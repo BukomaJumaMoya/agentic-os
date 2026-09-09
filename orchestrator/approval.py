@@ -10,8 +10,6 @@ Authority levels:
 """
 
 import json
-import os
-import sys
 import time
 import uuid
 from pathlib import Path
@@ -19,6 +17,7 @@ from datetime import datetime, timezone
 
 BASE = Path(__file__).resolve().parent.parent
 APPROVAL_DIR = BASE / ".approval"
+EVIDENCE_DIR = BASE / "evidence"
 
 SAFE_POLICIES = {
     # Actions explicitly designated safe without approval
@@ -69,10 +68,21 @@ def _decision_path(request_id: str) -> Path:
     return APPROVAL_DIR / f"{request_id}.decision.json"
 
 
-def request_approval(proposal: dict) -> dict:
-    """Create an approval request and return the request record."""
+def request_approval(proposal: dict, enquiry: str | None = None) -> dict:
+    """Create an approval request and return the request record.
+
+    ``enquiry`` is optional so the flagship workflow can record the originating
+    client message alongside the proposal and emit the matching evidence file.
+    When it is omitted the behaviour is the plain approval-boundary request.
+    Writes are idempotent: an existing request or evidence file for the same
+    id is never overwritten, so a retry cannot clobber a pending decision.
+    """
     APPROVAL_DIR.mkdir(exist_ok=True)
-    request_id = proposal.get("request_id") or str(uuid.uuid4())
+    request_id = (
+        proposal.get("request_id")
+        or proposal.get("proposal_id")
+        or str(uuid.uuid4())
+    )
     record = {
         "request_id": request_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -80,7 +90,15 @@ def request_approval(proposal: dict) -> dict:
         "status": "pending",
         "expires_at": datetime.now(timezone.utc).isoformat(),  # simplified
     }
-    _request_path(request_id).write_text(json.dumps(record, indent=2))
+    if enquiry is not None:
+        record["enquiry"] = enquiry
+        EVIDENCE_DIR.mkdir(exist_ok=True)
+        evidence_path = EVIDENCE_DIR / f"{request_id}-proposal.json"
+        if not evidence_path.exists():
+            evidence_path.write_text(json.dumps(proposal, indent=2))
+    request_path = _request_path(request_id)
+    if not request_path.exists():
+        request_path.write_text(json.dumps(record, indent=2))
     return record
 
 

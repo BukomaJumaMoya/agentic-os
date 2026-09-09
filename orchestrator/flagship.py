@@ -9,10 +9,11 @@ open-ended autonomous loop.
 
 import json
 import sys
-import os
 import uuid
 from pathlib import Path
 from datetime import datetime, timezone
+
+from orchestrator.approval import request_approval
 
 BASE = Path(__file__).resolve().parent.parent
 APPROVAL_DIR = BASE / ".approval"
@@ -114,28 +115,6 @@ Regards,
             "coding_context": coding_context,
         },
     }
-
-
-def request_approval(proposal: dict, enquiry: str) -> dict:
-    APPROVAL_DIR.mkdir(exist_ok=True)
-    EVIDENCE_DIR.mkdir(exist_ok=True)
-    request_id = proposal.get("proposal_id") or str(uuid.uuid4())
-    record = {
-        "request_id": request_id,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "enquiry": enquiry,
-        "proposal": proposal,
-        "status": "pending",
-    }
-    request_path = APPROVAL_DIR / f"{request_id}.request.json"
-    decision_path = APPROVAL_DIR / f"{request_id}.decision.json"
-    # idempotent write: do not overwrite existing request
-    if not request_path.exists():
-        request_path.write_text(json.dumps(record, indent=2))
-    evidence_path = EVIDENCE_DIR / f"{request_id}-proposal.json"
-    if not evidence_path.exists():
-        evidence_path.write_text(json.dumps(proposal, indent=2))
-    return record
 
 
 def _exec_with_retry(name, payload, retries=2):

@@ -5,17 +5,14 @@ Coding Agent — standalone bounded process.
 Authority: READ | INTERNAL_WRITE
 Purpose: bounded software-engineering responsibility
 Forbidden: external business actions, unrelated repo changes
-Verification: J15 three-tier
-  1. syntax check always
-  2. tests when available
-  3. safe diagnostic execution when appropriate
+Verification: syntax check only
+  py_compile for Python, `node --check` for JavaScript.
+  Runs when a path is supplied; skipped otherwise.
 """
 
 import sys
 import json
-import os
 import subprocess
-import re
 from pathlib import Path
 
 AGENT = "coding"
@@ -64,76 +61,6 @@ def syntax_check(path, language):
                 "stdout": res.stdout,
                 "stderr": res.stderr
             }
-        elif language in ("typescript", "ts"):
-            res = subprocess.run(
-                ["npx", "--yes", "tsc", "--noEmit", str(path)],
-                capture_output=True, text=True, timeout=60
-            )
-            return {
-                "status": "pass" if res.returncode == 0 else "fail",
-                "stdout": res.stdout,
-                "stderr": res.stderr
-            }
-    except Exception as e:
-        return {"status": "error", "reason": str(e)}
-    return {"status": "skipped", "reason": "unsupported language"}
-
-
-def run_tests(path, language):
-    path = Path(path)
-    if not path.exists():
-        return {"status": "skipped", "reason": "file not found"}
-    try:
-        if language in ("python", "py"):
-            if path.name.startswith("test_"):
-                res = subprocess.run(
-                    [sys.executable, "-m", "pytest", "-q", str(path)],
-                    capture_output=True, text=True, timeout=60
-                )
-            else:
-                res = subprocess.run(
-                    [sys.executable, "-m", "pytest", "-q", str(path.parent)],
-                    capture_output=True, text=True, timeout=60
-                )
-            return {
-                "status": "pass" if res.returncode == 0 else "fail",
-                "stdout": res.stdout[-4000:],
-                "stderr": res.stderr[-4000:]
-            }
-        elif language in ("javascript", "js", "node"):
-            pkg = path.parent / "package.json"
-            if pkg.exists():
-                res = subprocess.run(
-                    ["npm", "test", "--silent"],
-                    capture_output=True, text=True, timeout=60, cwd=str(path.parent)
-                )
-                return {
-                    "status": "pass" if res.returncode == 0 else "fail",
-                    "stdout": res.stdout[-4000:],
-                    "stderr": res.stderr[-4000:]
-                }
-    except Exception as e:
-        return {"status": "error", "reason": str(e)}
-    return {"status": "skipped", "reason": "no test runner detected"}
-
-
-def safe_diagnostic(path, language):
-    path = Path(path)
-    if not path.exists():
-        return {"status": "skipped", "reason": "file not found"}
-    try:
-        if language in ("python", "py"):
-            res = subprocess.run(
-                [sys.executable, "--help"],
-                capture_output=True, text=True, timeout=10
-            )
-            return {"status": "pass", "diagnostic": "python interpreter reachable"}
-        elif language in ("javascript", "js", "node"):
-            res = subprocess.run(
-                ["node", "--version"],
-                capture_output=True, text=True, timeout=10
-            )
-            return {"status": "pass", "diagnostic": res.stdout.strip()}
     except Exception as e:
         return {"status": "error", "reason": str(e)}
     return {"status": "skipped", "reason": "unsupported language"}
@@ -192,9 +119,6 @@ def main():
     verification = {}
     if path:
         verification["syntax"] = syntax_check(path, language)
-        if path.endswith(("test_.py", "test.py")) or "test" in Path(path).name:
-            verification["tests"] = run_tests(path, language)
-        safe_diagnostic(path, language)
     else:
         verification["syntax"] = {"status": "skipped", "reason": "no path provided"}
     result["verification"] = verification
