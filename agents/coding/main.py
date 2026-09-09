@@ -12,11 +12,50 @@ Verification: syntax check only
 
 import sys
 import json
+import os
+import re
 import subprocess
 from pathlib import Path
 
 AGENT = "coding"
 VERSION = "1.0.0"
+
+BASE = Path(__file__).resolve().parent.parent.parent
+WORKSPACE_ROOT = Path(os.getenv("CODING_AGENT_WORKSPACE") or (BASE / "workspace")).resolve()
+
+# Windows reserved device names: writing to these hits a device, not a file.
+_RESERVED_DEVICE_NAMES = {
+    "con", "prn", "aux", "nul",
+    *(f"com{i}" for i in range(1, 10)),
+    *(f"lpt{i}" for i in range(1, 10)),
+}
+
+
+def resolve_write_target(output_dir, filename):
+    """Resolve a write target inside WORKSPACE_ROOT, or raise ValueError.
+
+    Rejects absolute paths, drive letters, UNC prefixes, '..' traversal and
+    reserved Windows device names before resolving, then confirms the resolved
+    path is still under the workspace root. ``Path(a) / b`` discards ``a``
+    entirely when ``b`` is absolute, which is what made the original write
+    primitive arbitrary.
+    """
+    name = filename or "generated_code.txt"
+    for label, raw in (("output_dir", output_dir or "."), ("filename", name)):
+        s = str(raw).strip()
+        if not s:
+            raise ValueError(f"{label} must not be empty")
+        if s.startswith(("/", "\\")) or (len(s) > 1 and s[1] == ":"):
+            raise ValueError(f"{label} must be relative to the workspace")
+        parts = [seg for seg in re.split(r"[\\/]+", s) if seg not in ("", ".")]
+        if any(seg == ".." for seg in parts):
+            raise ValueError(f"{label} must not traverse with '..'")
+        if any(seg.split(".")[0].lower() in _RESERVED_DEVICE_NAMES for seg in parts):
+            raise ValueError(f"{label} must not use a reserved device name")
+    target = (WORKSPACE_ROOT / (output_dir or ".") / name).resolve()
+    if target != WORKSPACE_ROOT and WORKSPACE_ROOT not in target.parents:
+        raise ValueError("resolved path escapes the workspace root")
+    return target
 ALLOWED_ACTIONS = {
     "generate",
     "review",
@@ -125,11 +164,13 @@ def main():
 
     if write_files and code:
         try:
-            out = Path(output_dir)
-            out.mkdir(parents=True, exist_ok=True)
-            target = out / (data.get("filename") or "generated_code.txt")
+            target = resolve_write_target(output_dir, data.get("filename"))
+            target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(code, encoding="utf-8")
             result["result"]["written_to"] = str(target)
+        except ValueError as e:
+            result["security_warnings"].append(f"Refused unsafe write target: {e}")
+            result["status"] = "refused"
         except Exception as e:
             result["security_warnings"].append(f"File write failed: {e}")
             result["status"] = "partial"

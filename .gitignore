@@ -5,6 +5,11 @@ node_modules/
 *.tmp
 automation/evidence/*.md
 evidence/*.md
+# Runtime state: client enquiries, proposals and approval decisions.
+# The *.md rules above missed the .json artifacts entirely (audit S-7).
+.approval/
+evidence/
+automation/evidence/
 .vscode/
 .idea/
 .DS_Store

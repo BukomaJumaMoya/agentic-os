@@ -14,32 +14,36 @@ Supported commands:
 - RESUME <request_id>
 
 Security:
-- Only allowlist user ID 1360833951 may approve/reject.
+- Only the configured allowlisted user may approve/reject
+  (OPENCLAW_ALLOWED_USER_ID, or telegram.allowed_user_id in config/juma.json).
 - Commands are case-insensitive.
 - Returns structured JSON suitable for OpenClaw tool output.
 """
 
 import json
-import os
 import sys
 from pathlib import Path
-from datetime import datetime, timezone
 
-ALLOWED_USER_ID = os.getenv("OPENCLAW_ALLOWED_USER_ID", "1360833951")
-BASE = Path(__file__).resolve().parent.parent
-APPROVAL_DIR = BASE / ".approval"
+try:
+    from orchestrator import approval as _approval
+except ImportError:  # imported bare, with orchestrator/ on sys.path
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from orchestrator import approval as _approval
+
+ConfigError = _approval.ConfigError
+BASE = _approval.BASE
 
 
 def _resolve_request_dir() -> Path:
-    return APPROVAL_DIR
+    return _approval.APPROVAL_DIR
 
 
 def _decision_path(request_id: str) -> Path:
-    return _resolve_request_dir() / f"{request_id}.decision.json"
+    return _approval.decision_path(request_id)
 
 
 def _request_path(request_id: str) -> Path:
-    return _resolve_request_dir() / f"{request_id}.request.json"
+    return _approval.request_path(request_id)
 
 
 def _list_pending():
@@ -77,8 +81,14 @@ def _list_pending():
 
 
 def handle_telegram_command(user_id: str, text: str) -> dict:
-    if user_id != ALLOWED_USER_ID:
-        return {"ok": False, "error": "not_allowed", "allowed_user": ALLOWED_USER_ID}
+    try:
+        allowed = _approval.allowed_user_id()
+    except ConfigError as e:
+        # Fail closed: with no configured allowlist nobody is authorised.
+        return {"ok": False, "error": "allowlist_not_configured", "detail": str(e)}
+    if str(user_id) != allowed:
+        # Do not echo the allowlisted id back to an unauthorised caller.
+        return {"ok": False, "error": "not_allowed"}
 
     trimmed = text.strip()
     if not trimmed:
@@ -89,51 +99,27 @@ def handle_telegram_command(user_id: str, text: str) -> dict:
     request_id = parts[1] if len(parts) > 1 else None
     rest = parts[2] if len(parts) > 2 else ""
 
-    if command == "APPROVE":
+    if command in ("APPROVE", "REJECT"):
+        approved = command == "APPROVE"
         if not request_id:
-            return {"ok": False, "error": "missing_request_id", "example": "APPROVE <request_id>"}
-        decision_path = _decision_path(request_id)
-        if not decision_path.exists():
+            return {"ok": False, "error": "missing_request_id",
+                    "example": f"{command} <request_id>"}
+        # Existence must be checked against the REQUEST record. The previous
+        # code tested the DECISION file, which by definition does not exist for
+        # a pending approval -- so APPROVE could never succeed.
+        if not _request_path(request_id).exists():
             return {"ok": False, "error": "request_not_found", "request_id": request_id}
-        try:
-            existing = json.loads(decision_path.read_text())
-            if existing.get("approved") is True:
-                return {"ok": True, "status": "already_approved", "request_id": request_id, "decision": existing}
-        except Exception:
-            pass
-        decision = {
-            "request_id": request_id,
-            "approved": True,
-            "approver": "telegram-user",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "reason": rest or "approved",
-            "channel": "telegram",
-        }
-        decision_path.write_text(json.dumps(decision, indent=2))
-        return {"ok": True, "status": "approved", "request_id": request_id, "decision": decision}
-
-    if command == "REJECT":
-        if not request_id:
-            return {"ok": False, "error": "missing_request_id", "example": "REJECT <request_id>"}
-        decision_path = _decision_path(request_id)
-        if not decision_path.exists():
-            return {"ok": False, "error": "request_not_found", "request_id": request_id}
-        try:
-            existing = json.loads(decision_path.read_text())
-            if existing.get("approved") is True:
-                return {"ok": True, "status": "already_decided", "request_id": request_id, "decision": existing}
-        except Exception:
-            pass
-        decision = {
-            "request_id": request_id,
-            "approved": False,
-            "approver": "telegram-user",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "reason": rest or "rejected",
-            "channel": "telegram",
-        }
-        decision_path.write_text(json.dumps(decision, indent=2))
-        return {"ok": True, "status": "rejected", "request_id": request_id, "decision": decision}
+        before = _decision_path(request_id).exists()
+        decision = _approval.record_decision(
+            request_id, approved, approver="telegram-user",
+            reason=rest or ("approved" if approved else "rejected"),
+            channel="telegram",
+        )
+        if before:
+            return {"ok": True, "status": "already_decided",
+                    "request_id": request_id, "decision": decision}
+        return {"ok": True, "status": "approved" if approved else "rejected",
+                "request_id": request_id, "decision": decision}
 
     if command == "STATUS":
         if not request_id:
@@ -170,7 +156,12 @@ def main():
         print(json.dumps({"error": f"Invalid input JSON: {e}"}))
         sys.exit(1)
 
-    user_id = data.get("user_id") or os.getenv("OPENCLAW_ALLOWED_USER_ID", "1360833951")
+    # No fallback: the caller must state who sent the message. Defaulting to
+    # the allowlisted id would authorise every anonymous invocation.
+    user_id = data.get("user_id")
+    if not user_id:
+        print(json.dumps({"ok": False, "error": "missing_user_id"}))
+        sys.exit(2)
     text = data.get("text") or data.get("message") or ""
     result = handle_telegram_command(user_id, text)
     print(json.dumps(result, indent=2))

@@ -9,36 +9,47 @@ It requires OpenClaw to be running and reachable at OPENCLAW_GATEWAY_URL.
 """
 
 import json
-import os
 import sys
 import urllib.request
 import urllib.error
 from pathlib import Path
 from datetime import datetime, timezone
 
-DEFAULT_GATEWAY_URL = "http://127.0.0.1:18789"
-DEFAULT_ALLOWED_USER_ID = "1360833951"
+try:
+    from orchestrator import approval as _approval
+except ImportError:  # imported bare, with orchestrator/ on sys.path (tests)
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from orchestrator import approval as _approval
+
+ConfigError = _approval.ConfigError
 
 
 def _gateway_url() -> str:
-    return os.getenv("OPENCLAW_GATEWAY_URL", DEFAULT_GATEWAY_URL)
+    return _approval.gateway_url()
 
 
 def _allowed_user_id() -> str:
-    return os.getenv("OPENCLAW_ALLOWED_USER_ID", DEFAULT_ALLOWED_USER_ID)
+    return _approval.allowed_user_id()
 
 
 def _resolve_request_dir() -> Path:
-    return Path(__file__).resolve().parent.parent / ".approval"
+    return _approval.APPROVAL_DIR
 
 
 def _post(path: str, payload: dict, timeout: int = 30) -> dict:
     url = f"{_gateway_url()}{path}"
     data = json.dumps(payload).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    try:
+        # openclaw.json runs gateway.auth.mode="token"; an unauthenticated POST
+        # is rejected anyway, and sending one silently hides the misconfig.
+        headers["Authorization"] = f"Bearer {_approval.gateway_token()}"
+    except ConfigError as e:
+        return {"ok": False, "status": 0, "error": f"missing gateway token: {e}"}
     req = urllib.request.Request(
         url,
         data=data,
-        headers={"Content-Type": "application/json"},
+        headers=headers,
         method="POST",
     )
     try:
@@ -112,8 +123,14 @@ def send_approval_prompt(request_id: str, proposal: dict) -> dict:
     ]
     text = "\n".join(message_lines)
 
+    try:
+        recipient = _allowed_user_id()
+    except ConfigError as e:
+        return {"sent": False, "channel": "telegram", "request_id": request_id,
+                "reason": f"allowlist not configured: {e}"}
+
     payload = {
-        "to": _allowed_user_id(),
+        "to": recipient,
         "text": text,
         "approval_request_id": request_id,
     }
@@ -122,6 +139,7 @@ def send_approval_prompt(request_id: str, proposal: dict) -> dict:
 
     sent = bool(result.get("ok")) or int(result.get("status", 0)) == 200
     state = "sent" if sent else "failed"
+    state_write_error = None
     try:
         if request_path.exists():
             rec = json.loads(request_path.read_text())
@@ -131,33 +149,33 @@ def send_approval_prompt(request_id: str, proposal: dict) -> dict:
         rec["telegram_prompt_sent_at"] = datetime.now(timezone.utc).isoformat()
         rec["telegram_prompt_result"] = result
         request_path.write_text(json.dumps(rec, indent=2))
-    except Exception:
-        pass
+    except Exception as e:
+        # Never silent: the caller decides what an unrecorded prompt means.
+        state_write_error = str(e)
 
     if sent:
-        return {"sent": True, "channel": "telegram", "request_id": request_id, "result": result}
-    return {"sent": False, "channel": "telegram", "request_id": request_id, "reason": result.get("error") or result.get("error"), "result": result}
+        out = {"sent": True, "channel": "telegram", "request_id": request_id, "result": result}
+    else:
+        # `result.get("error") or result.get("error")` was a typo: a non-2xx
+        # response with no error body yielded reason=None, which reads as
+        # "no problem". Always give a concrete reason.
+        out = {
+            "sent": False,
+            "channel": "telegram",
+            "request_id": request_id,
+            "reason": result.get("error") or f"gateway returned status {result.get('status')}",
+            "result": result,
+        }
+    if state_write_error:
+        out["state_write_error"] = state_write_error
+    return out
 
 
 def record_telegram_decision(request_id: str, approved: bool, approver: str = "telegram-user", reason: str = None) -> dict:
-    decision_path = _resolve_request_dir() / f"{request_id}.decision.json"
-    decision = {
-        "request_id": request_id,
-        "approved": approved,
-        "approver": approver,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "reason": reason or ("approved" if approved else "rejected"),
-        "channel": "telegram",
-    }
-    if decision_path.exists():
-        try:
-            existing = json.loads(decision_path.read_text())
-            if existing.get("approved") is True:
-                return existing
-        except Exception:
-            pass
-    decision_path.write_text(json.dumps(decision, indent=2))
-    return decision
+    """Thin wrapper: orchestrator.approval owns decision records."""
+    return _approval.record_decision(
+        request_id, approved, approver=approver, reason=reason, channel="telegram"
+    )
 
 
 def main():

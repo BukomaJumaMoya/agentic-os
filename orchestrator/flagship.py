@@ -8,6 +8,7 @@ open-ended autonomous loop.
 """
 
 import json
+import os
 import sys
 import uuid
 from pathlib import Path
@@ -16,8 +17,11 @@ from datetime import datetime, timezone
 from orchestrator.approval import request_approval
 
 BASE = Path(__file__).resolve().parent.parent
-APPROVAL_DIR = BASE / ".approval"
-EVIDENCE_DIR = BASE / "evidence"
+# Mirrors orchestrator.approval.STATE_ROOT -- one knob to relocate runtime
+# state out of the repo tree (audit S-7 / P0-5).
+STATE_ROOT = Path(os.getenv("AGENTIC_STATE_DIR") or BASE).resolve()
+APPROVAL_DIR = STATE_ROOT / ".approval"
+EVIDENCE_DIR = STATE_ROOT / "evidence"
 CONFIG_PATH = BASE / "config" / "juma.json"
 
 
@@ -217,6 +221,7 @@ def run_workflow(enquiry: str, approval_mode: bool = True, force_agent: str = No
     approval_record = None
     request_id = None
     telegram_prompt = None
+    prompt_delivered = None
     if approval_mode:
         approval_record = request_approval(proposal, enquiry)
         request_id = approval_record.get("request_id")
@@ -224,7 +229,8 @@ def run_workflow(enquiry: str, approval_mode: bool = True, force_agent: str = No
             from orchestrator.telegram_approval import send_approval_prompt
             telegram_prompt = send_approval_prompt(request_id, proposal)
         except Exception as e:
-            telegram_prompt = {"sent": False, "reason": str(e)}
+            telegram_prompt = {"sent": False, "reason": f"send_approval_prompt raised: {e}"}
+        prompt_delivered = bool((telegram_prompt or {}).get("sent"))
 
     external_action = {
         "type": "send_proposal",
@@ -241,6 +247,9 @@ def run_workflow(enquiry: str, approval_mode: bool = True, force_agent: str = No
     status = "awaiting_approval"
     if not approval_mode:
         status = "ready_for_approval"
+    elif not prompt_delivered:
+        # A prompt nobody received must not look like one that was delivered.
+        status = "approval_prompt_undelivered"
     if not classification["selected_agents"] and specialist_errors:
         status = "error"
 
@@ -259,6 +268,7 @@ def run_workflow(enquiry: str, approval_mode: bool = True, force_agent: str = No
         "proposal": proposal,
         "verification": verification,
         "requires_approval": True,
+        "approval_prompt_delivered": prompt_delivered,
         "approval_request": approval_record,
         "external_actions": external_actions,
         "status": status,

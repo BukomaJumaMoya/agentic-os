@@ -1,6 +1,90 @@
 import { defineToolPlugin } from "openclaw/plugin-sdk/tool-plugin";
 import { Type } from "typebox";
 import http from "node:http";
+import { spawn } from "node:child_process";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+// dist/index.js -> plugin root -> tools/ -> repo root
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+const TELEGRAM_COMMANDS = path.join(REPO_ROOT, "orchestrator", "telegram_commands.py");
+const PYTHON = process.env.AGENTIC_PYTHON || "python";
+
+/**
+ * Run the approval-command parser with a JSON payload on stdin.
+ * The parser owns authorisation: it compares the sender id against the
+ * configured allowlist and fails closed when that is unset.
+ */
+function runTelegramCommand(userId, text, timeoutMs = 30_000) {
+  return new Promise((resolve) => {
+    let proc;
+    try {
+      proc = spawn(PYTHON, [TELEGRAM_COMMANDS], {
+        stdio: ["pipe", "pipe", "pipe"],
+        cwd: REPO_ROOT,
+      });
+    } catch (error) {
+      resolve({ ok: false, error: `spawn failed: ${error?.message ?? error}` });
+      return;
+    }
+
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+
+    const timer = setTimeout(() => {
+      proc.kill("SIGTERM");
+      finish({ ok: false, error: `telegram_commands timed out after ${timeoutMs}ms` });
+    }, timeoutMs);
+
+    proc.stdout.on("data", (c) => { stdout += c.toString(); });
+    proc.stderr.on("data", (c) => { stderr += c.toString(); });
+    proc.on("error", (error) => finish({ ok: false, error: `spawn failed: ${error?.message ?? error}` }));
+    proc.on("close", () => {
+      const text = stdout.trim();
+      if (!text) {
+        finish({ ok: false, error: stderr.trim() || "no output from telegram_commands" });
+        return;
+      }
+      try {
+        finish(JSON.parse(text));
+      } catch {
+        finish({ ok: false, error: `non-JSON output: ${text.slice(0, 500)}` });
+      }
+    });
+
+    proc.stdin.write(JSON.stringify({ user_id: userId, text }));
+    proc.stdin.end();
+  });
+}
+
+/**
+ * Resolve the real sender from the gateway context. Never from model-supplied
+ * parameters: a spoofable sender id would hand approval authority to anything
+ * that can call the tool.
+ */
+function resolveSenderId(context) {
+  const candidates = [
+    context?.senderId,
+    context?.userId,
+    context?.user?.id,
+    context?.message?.from?.id,
+    context?.source?.userId,
+    context?.chat?.id,
+  ];
+  for (const candidate of candidates) {
+    if (candidate === undefined || candidate === null) continue;
+    const value = String(candidate).trim();
+    if (value) return value;
+  }
+  return null;
+}
 
 const DEFAULT_ROUTER_HOST = "127.0.0.1";
 const DEFAULT_ROUTER_PORT = 18790;
@@ -146,6 +230,44 @@ export default defineToolPlugin({
             stderr: `Hermes invocation failed: ${message}`,
             returnCode: -1,
           };
+        }
+      },
+    }),
+    tool({
+      name: "telegram_approval_command",
+      description:
+        "Handle an approval command from Telegram (APPROVE <id>, REJECT <id>, " +
+        "STATUS <id>, LIST, RESUME <id>). Authorisation is enforced by the " +
+        "orchestrator against the configured allowlist.",
+      parameters: Type.Object({
+        text: Type.String({
+          description: "The raw command text as the user sent it.",
+          maxLength: 500,
+        }),
+      }),
+      outputSchema: Type.Object({}, { additionalProperties: true }),
+      async execute(params, _config, context) {
+        const text = typeof params?.text === "string" ? params.text.trim() : "";
+        if (!text) {
+          return { ok: false, error: "empty_command" };
+        }
+        // Sender comes from the gateway context only. If the context does not
+        // carry one we refuse rather than trusting a model-supplied id.
+        const senderId = resolveSenderId(context);
+        if (!senderId) {
+          return {
+            ok: false,
+            error: "no_verified_sender",
+            detail:
+              "The gateway context carried no sender id; refusing to act on an " +
+              "unauthenticated approval command.",
+          };
+        }
+        try {
+          return await runTelegramCommand(senderId, text);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          return { ok: false, error: `telegram_approval_command failed: ${message}` };
         }
       },
     }),

@@ -42,7 +42,11 @@ def test_e2e_full_flow_creates_evidence():
     setup()
     enquiry = "Hi, I need a web app for my small business. Budget around $10k, timeline 2 months."
     result = run_workflow(enquiry, approval_mode=True)
-    assert result["status"] == "awaiting_approval"
+    # Delivery-dependent: "awaiting_approval" only when the prompt actually
+    # reached Telegram. Assert the invariant that status and the delivery flag
+    # agree, so an undelivered prompt can never read as a delivered one.
+    assert result["status"] in ("awaiting_approval", "approval_prompt_undelivered")
+    assert result["approval_prompt_delivered"] is (result["status"] == "awaiting_approval")
     request_id = result["approval_request"]["request_id"]
     assert (APPROVAL_DIR / f"{request_id}.request.json").exists()
     assert (EVIDENCE_DIR / f"{request_id}-proposal.json").exists()

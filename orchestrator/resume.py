@@ -14,8 +14,9 @@ import sys
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(BASE / "orchestrator"))
+sys.path.insert(0, str(BASE))
 
+from orchestrator import approval as _approval  # noqa: E402
 from orchestrator.approval import resume_if_approved  # noqa: E402
 from orchestrator.external_action import execute_external_action  # noqa: E402
 
@@ -37,14 +38,19 @@ def main():
         print(json.dumps({"ok": False, "request_id": request_id, "reason": resume.get("reason", "not_approved")}))
         sys.exit(2)
 
-    approval_dir = BASE / ".approval"
-    request_path = approval_dir / f"{request_id}.request.json"
-    proposal = {}
-    if request_path.exists():
-        try:
-            proposal = json.loads(request_path.read_text()).get("proposal", {})
-        except Exception:
-            pass
+    request_path = _approval.request_path(request_id)
+    if not request_path.exists():
+        print(json.dumps({"ok": False, "request_id": request_id,
+                          "reason": "request_record_missing"}))
+        sys.exit(2)
+    try:
+        proposal = json.loads(request_path.read_text()).get("proposal", {})
+    except Exception as e:
+        # Swallowing this left proposal={}, which execute_external_action
+        # then sent as the literal string "{}" while reporting ok:True.
+        print(json.dumps({"ok": False, "request_id": request_id,
+                          "reason": f"request_record_unreadable: {e}"}))
+        sys.exit(2)
 
     external_action = {
         "request_id": request_id,

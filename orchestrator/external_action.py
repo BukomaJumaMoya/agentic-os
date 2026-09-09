@@ -13,14 +13,20 @@ without a new explicit approval.
 """
 
 import json
-import os
 import subprocess
 import sys
 from pathlib import Path
 from datetime import datetime, timezone
 
-BASE = Path(__file__).resolve().parent.parent
-APPROVAL_DIR = BASE / ".approval"
+try:
+    from orchestrator import approval as _approval
+except ImportError:  # imported bare, with orchestrator/ on sys.path
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from orchestrator import approval as _approval
+
+ConfigError = _approval.ConfigError
+BASE = _approval.BASE
+APPROVAL_DIR = _approval.APPROVAL_DIR
 
 
 def _project_base() -> Path:
@@ -43,25 +49,31 @@ def execute_external_action(external_action: dict, proposal: dict = None) -> dic
     if not request_id:
         return {"ok": False, "reason": "missing_request_id"}
 
-    decision_path = APPROVAL_DIR / f"{request_id}.decision.json"
-    if not decision_path.exists():
-        return {"ok": False, "reason": "missing_decision"}
-    try:
-        decision = json.loads(decision_path.read_text())
-    except Exception as e:
-        return {"ok": False, "reason": f"invalid_decision: {e}"}
-    if decision.get("approved") is not True:
-        return {"ok": False, "reason": "not_approved", "decision": decision}
+    # Single gate: orchestrator.approval owns what "approved" means.
+    decision_path = _approval.decision_path(request_id)
+    resume = _approval.resume_if_approved(request_id)
+    if not resume.get("approved"):
+        return {"ok": False, "reason": resume.get("reason", "not_approved"),
+                "decision": resume.get("decision")}
+    decision = resume.get("decision") or {}
 
     executed = False
     result = None
+    recipient = None
     verification = {"request_id": request_id, "attempted_at": datetime.now(timezone.utc).isoformat()}
+
+    if action_type in ("send_proposal", "send_message"):
+        try:
+            recipient = _approval.allowed_user_id()
+        except ConfigError as e:
+            return {"ok": False, "request_id": request_id, "action_type": action_type,
+                    "reason": f"allowlist not configured: {e}"}
 
     if action_type == "send_proposal":
         proposal_text = proposal.get("body") or proposal.get("subject") or ""
         message = proposal_text if proposal_text else json.dumps(proposal, indent=2)[:4000]
         payload = {
-            "to": os.getenv("OPENCLAW_ALLOWED_USER_ID", "1360833951"),
+            "to": recipient,
             "text": message,
             "approval_request_id": request_id,
         }
@@ -76,7 +88,7 @@ def execute_external_action(external_action: dict, proposal: dict = None) -> dic
     elif action_type == "send_message":
         text = proposal.get("text") or json.dumps(proposal, indent=2)[:4000]
         payload = {
-            "to": os.getenv("OPENCLAW_ALLOWED_USER_ID", "1360833951"),
+            "to": recipient,
             "text": text,
             "approval_request_id": request_id,
         }
@@ -129,16 +141,22 @@ def execute_external_action(external_action: dict, proposal: dict = None) -> dic
     verification["executed"] = executed
     verification["completed_at"] = datetime.now(timezone.utc).isoformat()
 
+    audit_write_error = None
     try:
         decision["execution"] = verification
         decision_path.write_text(json.dumps(decision, indent=2))
-    except Exception:
-        pass
+    except Exception as e:
+        # The action has already run. Deliberately do NOT flip ok: reporting
+        # failure here invites a retry and a duplicate side effect. Surface it
+        # loudly instead -- executed, but unrecorded.
+        audit_write_error = str(e)
+        verification["audit_write_failed"] = audit_write_error
 
     return {
         "ok": executed,
         "request_id": request_id,
         "action_type": action_type,
+        "audit_write_error": audit_write_error,
         "verification": verification,
         "result": result,
     }

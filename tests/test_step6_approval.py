@@ -30,22 +30,43 @@ def teardown():
         shutil.rmtree(APPROVAL_DIR)
 
 def test_classify_read():
-    assert classify("list tasks") == "READ"
+    # Only registered action names reduce authority; free text does not.
+    assert classify("list_lists") == "READ"
     assert classify("search_tasks") == "READ"
-    assert classify("explain code") == "READ"
+    assert classify("explain") == "READ"
     print("PASS: classify_read")
 
 def test_classify_internal_write():
-    assert classify("create_task") == "INTERNAL_WRITE"
     assert classify("generate") == "INTERNAL_WRITE"
-    assert classify("update_task") == "INTERNAL_WRITE"
+    assert classify("debug") == "INTERNAL_WRITE"
+    assert classify("refactor") == "INTERNAL_WRITE"
     print("PASS: classify_internal_write")
 
 def test_classify_external_action():
     assert classify("send_message") == "EXTERNAL_ACTION"
     assert classify("publish") == "EXTERNAL_ACTION"
     assert classify("submit_proposal") == "EXTERNAL_ACTION"
+    # ClickUp writes mutate a third-party account (audit F-1).
+    assert classify("create_task") == "EXTERNAL_ACTION"
+    assert classify("update_task") == "EXTERNAL_ACTION"
     print("PASS: classify_external_action")
+
+def test_unregistered_action_denied():
+    """P0-4 regression: anything not in the registry must fail closed.
+
+    The old substring heuristic returned READ for all of these, so they ran
+    with no approval at all (audit F-1).
+    """
+    for action in (
+        "wire_transfer", "pay_invoice", "email_client", "git push",
+        "post_to_linkedin", "DELETE", "exfiltrate", "rm -rf /",
+        "list tasks", "explain code", "totally_new_action_2027",
+    ):
+        assert classify(action) == "EXTERNAL_ACTION", f"{action!r} failed open"
+    # An absent or empty action must not be treated as safe either.
+    assert classify("") == "EXTERNAL_ACTION"
+    assert classify(None) == "EXTERNAL_ACTION"
+    print("PASS: unregistered_action_denied")
 
 def test_read_proceeds():
     setup()
@@ -59,7 +80,8 @@ def test_read_proceeds():
 
 def test_internal_write_proceeds():
     setup()
-    step = {"step": "projects", "agent": "projects", "action": "create_task", "description": "Create internal draft task"}
+    # create_task is EXTERNAL_ACTION since P0-4; use a genuine internal write.
+    step = {"step": "coding", "agent": "coding", "action": "generate", "description": "Generate an internal draft"}
     result = enforce(step)
     assert result["allowed"] is True
     assert result["authority"] == "INTERNAL_WRITE"
@@ -176,6 +198,7 @@ def main():
         test_classify_read()
         test_classify_internal_write()
         test_classify_external_action()
+        test_unregistered_action_denied()
         test_read_proceeds()
         test_internal_write_proceeds()
         test_external_action_pauses()

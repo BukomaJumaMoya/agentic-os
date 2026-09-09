@@ -41,9 +41,11 @@ Primary agentic brain. Understands objectives, maintains task state, reasons abo
 Communication gateway. Receives and routes user interactions from Telegram. Must not become a competing autonomous brain. May delegate to Hermes.
 
 ### Telegram
-Human communication interface. Two bots are configured:
-- Hermes bot: `8917859111` — allowlist `1360833951`
-- OpenClaw bot: `8845344838` — allowlist `1360833951`
+Human communication interface. Two bots are configured, one fronting Hermes and
+one fronting OpenClaw, each restricted to a single allowlisted account. Bot IDs
+and the allowlisted chat ID are deliberately not published here: that allowlist
+is the only authentication boundary in the system, and a bot ID is the numeric
+prefix of its token. See the operator runbook for the values.
 
 ### Research Agent
 Standalone Python process. Bounded research and evidence gathering only. Distinguishes facts, assumptions, and unknowns. Returns structured JSON. Forbidden from external business actions.
@@ -226,9 +228,9 @@ Push to `master` to trigger GitHub Actions `quality` workflow. It runs:
 
 ## Future Roadmap
 
-- Wire OpenClaw → Hermes routing (`hermes chat -q`)
-- Implement Telegram-based approval prompts
-- Implement approved external action execution
+- Implemented Telegram-based approval prompts
+- Implemented approved external action execution
+- Wire OpenClaw → Hermes routing plugin (`invoke_hermes`) and verify live gateway execution
 - Add semantic classification for enquiry routing
 - Improve research agent resilience
 - Add coverage measurement to CI
