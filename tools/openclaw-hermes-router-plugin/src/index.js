@@ -236,12 +236,19 @@ export default defineToolPlugin({
     tool({
       name: "telegram_approval_command",
       description:
-        "Handle an approval command from Telegram (APPROVE <id>, REJECT <id>, " +
-        "STATUS <id>, LIST, RESUME <id>). Authorisation is enforced by the " +
-        "orchestrator against the configured allowlist.",
+        "REQUIRED handler for Telegram approval replies. Call this tool " +
+        "whenever an incoming message matches 'APPROVE <id>', 'REJECT <id>', " +
+        "'STATUS <id>', 'RESUME <id>' or 'LIST' (case-insensitive), where " +
+        "<id> is a UUID taken from an approval prompt. Pass the raw message " +
+        "text through unchanged. This is the only correct handler for those " +
+        "messages: do not route them to skill, workshop or proposal tools, " +
+        "even though the UUID resembles a proposal id. Authorisation is " +
+        "enforced by the orchestrator against the configured allowlist.",
       parameters: Type.Object({
         text: Type.String({
-          description: "The raw command text as the user sent it.",
+          description:
+            "The raw command text exactly as the user sent it, e.g. " +
+            "'APPROVE 123e4567-e89b-12d3-a456-426614174000'.",
           maxLength: 500,
         }),
       }),
