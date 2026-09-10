@@ -64,27 +64,38 @@ function runTelegramCommand(userId, text, timeoutMs = 30_000) {
   });
 }
 
-/**
- * Resolve the real sender from the gateway context. Never from model-supplied
- * parameters: a spoofable sender id would hand approval authority to anything
- * that can call the tool.
- */
-function resolveSenderId(context) {
-  const candidates = [
-    context?.senderId,
-    context?.userId,
-    context?.user?.id,
-    context?.message?.from?.id,
-    context?.source?.userId,
-    context?.chat?.id,
-  ];
-  for (const candidate of candidates) {
-    if (candidate === undefined || candidate === null) continue;
-    const value = String(candidate).trim();
-    if (value) return value;
-  }
-  return null;
+/** Wrap a plain payload in the AgentToolResult {content, details} envelope. */
+function toolResult(payload) {
+  return {
+    content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
+    details: payload,
+  };
 }
+
+function normalizeSenderId(value) {
+  if (value === undefined || value === null) return null;
+  const s = String(value).trim();
+  return s || null;
+}
+
+const TELEGRAM_APPROVAL_DESCRIPTION =
+  "REQUIRED handler for Telegram approval replies. Call this tool " +
+  "whenever an incoming message matches 'APPROVE <id>', 'REJECT <id>', " +
+  "'STATUS <id>', 'RESUME <id>' or 'LIST' (case-insensitive), where " +
+  "<id> is a UUID taken from an approval prompt. Pass the raw message " +
+  "text through unchanged. This is the only correct handler for those " +
+  "messages: do not route them to skill, workshop or proposal tools, " +
+  "even though the UUID resembles a proposal id. Authorisation is " +
+  "enforced by the orchestrator against the configured allowlist.";
+
+const TELEGRAM_APPROVAL_PARAMETERS = Type.Object({
+  text: Type.String({
+    description:
+      "The raw command text exactly as the user sent it, e.g. " +
+      "'APPROVE 123e4567-e89b-12d3-a456-426614174000'.",
+    maxLength: 500,
+  }),
+});
 
 const DEFAULT_ROUTER_HOST = "127.0.0.1";
 const DEFAULT_ROUTER_PORT = 18790;
@@ -235,48 +246,52 @@ export default defineToolPlugin({
     }),
     tool({
       name: "telegram_approval_command",
-      description:
-        "REQUIRED handler for Telegram approval replies. Call this tool " +
-        "whenever an incoming message matches 'APPROVE <id>', 'REJECT <id>', " +
-        "'STATUS <id>', 'RESUME <id>' or 'LIST' (case-insensitive), where " +
-        "<id> is a UUID taken from an approval prompt. Pass the raw message " +
-        "text through unchanged. This is the only correct handler for those " +
-        "messages: do not route them to skill, workshop or proposal tools, " +
-        "even though the UUID resembles a proposal id. Authorisation is " +
-        "enforced by the orchestrator against the configured allowlist.",
-      parameters: Type.Object({
-        text: Type.String({
-          description:
-            "The raw command text exactly as the user sent it, e.g. " +
-            "'APPROVE 123e4567-e89b-12d3-a456-426614174000'.",
-          maxLength: 500,
-        }),
-      }),
+      description: TELEGRAM_APPROVAL_DESCRIPTION,
+      parameters: TELEGRAM_APPROVAL_PARAMETERS,
       outputSchema: Type.Object({}, { additionalProperties: true }),
-      async execute(params, _config, context) {
-        const text = typeof params?.text === "string" ? params.text.trim() : "";
-        if (!text) {
-          return { ok: false, error: "empty_command" };
-        }
-        // Sender comes from the gateway context only. If the context does not
-        // carry one we refuse rather than trusting a model-supplied id.
-        const senderId = resolveSenderId(context);
-        if (!senderId) {
-          return {
-            ok: false,
-            error: "no_verified_sender",
-            detail:
-              "The gateway context carried no sender id; refusing to act on an " +
-              "unauthenticated approval command.",
-          };
-        }
-        try {
-          return await runTelegramCommand(senderId, text);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          return { ok: false, error: `telegram_approval_command failed: ${message}` };
-        }
-      },
+      // Factory shape, not execute: ToolPluginExecutionContext carries only
+      // {api, signal, toolCallId, onUpdate} and never any sender identity.
+      // OpenClawPluginToolContext does -- requesterSenderId and senderIsOwner
+      // are documented "runtime-provided, not tool args", so they cannot be
+      // spoofed by the model. The host invokes this per materialisation with
+      // the current turn's context.
+      factory: ({ toolContext }) => ({
+        name: "telegram_approval_command",
+        label: "Telegram Approval Command",
+        description: TELEGRAM_APPROVAL_DESCRIPTION,
+        parameters: TELEGRAM_APPROVAL_PARAMETERS,
+        outputSchema: Type.Object({}, { additionalProperties: true }),
+        async execute(_toolCallId, params, _signal) {
+          const text = typeof params?.text === "string" ? params.text.trim() : "";
+          if (!text) return toolResult({ ok: false, error: "empty_command" });
+
+          // Trusted, runtime-supplied sender. Absent means we cannot attribute
+          // the command, so refuse -- same behaviour as before.
+          const senderId = normalizeSenderId(toolContext?.requesterSenderId);
+          if (!senderId) {
+            return toolResult({
+              ok: false,
+              error: "no_verified_sender",
+              detail:
+                "The gateway context carried no requesterSenderId; refusing to " +
+                "act on an unauthenticated approval command.",
+            });
+          }
+          try {
+            const result = await runTelegramCommand(senderId, text);
+            return toolResult({
+              ...result,
+              senderIsOwner: toolContext?.senderIsOwner === true,
+            });
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            return toolResult({
+              ok: false,
+              error: `telegram_approval_command failed: ${message}`,
+            });
+          }
+        },
+      }),
     }),
   ],
 });
