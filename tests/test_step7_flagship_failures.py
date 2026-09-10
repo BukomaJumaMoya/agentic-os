@@ -16,9 +16,12 @@ from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-EVIDENCE_DIR = BASE / "evidence"
-APPROVAL_DIR = BASE / ".approval"
+import _state_isolation  # noqa: E402,F401 -- MUST precede orchestrator imports
+
+EVIDENCE_DIR = _state_isolation.EVIDENCE_DIR
+APPROVAL_DIR = _state_isolation.APPROVAL_DIR
 
 from orchestrator.flagship import run_workflow, classify_enquiry
 from orchestrator.approval import record_decision, resume_if_approved, cleanup, is_approved

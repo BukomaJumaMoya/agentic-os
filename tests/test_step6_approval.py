@@ -12,13 +12,16 @@ from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from orchestrator.approval import (
+import _state_isolation  # noqa: E402,F401 -- MUST precede orchestrator imports
+
+from orchestrator.approval import (  # noqa: E402
     classify, request_approval, wait_for_decision, record_decision,
     is_approved, resume_if_approved, enforce, cleanup
 )
 
-APPROVAL_DIR = BASE / ".approval"
+APPROVAL_DIR = _state_isolation.APPROVAL_DIR
 
 def setup():
     if APPROVAL_DIR.exists():
