@@ -90,14 +90,16 @@ def _post(path: str, payload: dict, timeout: int = 30) -> dict:
 def _unwrap_tool_result(result):
     """Unwrap the tool layer's jsonResult() envelope to the payload dict.
 
-    The exact nesting is not pinned down in the bundle, so this peels a couple
-    of plausible wrapper keys and returns the value unchanged once it already
-    looks like the payload.
+    The real shape, observed live from conversations_send, is
+    {content: [{type: "text", text: "<json>"}], details: {...payload}} -- the
+    payload lives under "details". The remaining keys are defensive fallbacks
+    for tool envelopes not yet observed. Returns the value unchanged once it
+    already looks like the payload.
     """
     for _ in range(3):
         if not isinstance(result, dict) or "conversations" in result or "status" in result:
             break
-        for key in ("json", "result", "value", "data"):
+        for key in ("details", "json", "result", "value", "data"):
             inner = result.get(key)
             if isinstance(inner, (dict, list)):
                 result = inner
