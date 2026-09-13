@@ -1,272 +1,244 @@
-# JUMA — Freelance Software Engineering Agentic OS
+# agentic-os
 
-**Status:** Integration artifact complete; runtime verified partially  
-**Architecture:** Hermes-brain, OpenClaw-gateway, specialist agents  
-**Current model:** `google/gemini-3.5-flash` via OpenRouter with fallback `openrouter/nvidia/nemotron-3.5-lightning:free`  
-**License:** MIT
+An assistant for a one-person software consultancy. A client enquiry arrives over
+Telegram, three specialist agents gather what they can, a model drafts a
+proposal, and nothing reaches anyone until a human approves it.
 
----
+It is a bounded pipeline, not an autonomous agent. Every step is a subprocess
+with a fixed contract, and the only thing that can send a message is code behind
+an approval gate.
 
-## What It Is
+## What actually happens
 
-JUMA is a personal freelance software engineering operating system. It automates the path from an unstructured client enquiry to a structured proposal, project record, and approval request — without sending anything externally without human approval.
-
-## Problem It Solves
-
-Freelance client enquiries arrive unstructured and scattered. JUMA classifies the enquiry, selects the right specialist, gathers evidence, prepares a draft proposal, and presents a concise approval request — in approximately five minutes for normal enquiries.
-
-## Target User
-
-Juma Moya — freelance software engineer. The system is opinionated for a single-user, Telegram-first workflow.
-
-## Architecture
-
-```mermaid
-graph TD
-    JUMA[JUMA] --> TELEGRAM[Telegram]
-    TELEGRAM --> OPENCLAW[OpenClaw]
-    OPENCLAW --> HERMES[Hermes]
-    HERMES --> RESEARCH[Research Agent]
-    HERMES --> PROJECTS[Projects Agent]
-    HERMES --> CODING[Coding Agent]
-    RESEARCH --> GEMINI[Gemini]
-    PROJECTS --> CLICKUP[ClickUp]
-    CODING --> GITHUB[GitHub]
+```
+ Telegram  ──▶  OpenClaw gateway  ──▶  /apr_enquiry  ──▶  enquiry_runner (detached)
+                                                               │
+                              ┌────────────────────────────────┤
+                              ▼                ▼               ▼
+                        research agent   projects agent   coding agent
+                         (Tavily)        (ClickUp, RO)   (feasibility)
+                              └────────────────┬───────────────┘
+                                               ▼
+                                     proposal synthesis  ──▶  provider chain
+                                               │                (Groq → Gemini
+                                               ▼                 → OpenRouter)
+                                     approval request on disk
+                                               │
+                              ┌────────────────┴────────────────┐
+                              ▼                                 ▼
+                    approval prompt (gateway)          PDF (Telegram Bot API)
+                              │
+                       /apr_approve <id>
+                              ▼
+                     external action executes
 ```
 
-### Hermes
-Primary agentic brain. Understands objectives, maintains task state, reasons about what needs to happen, decides which specialist agents and tools are appropriate, observes results, verifies results, adapts/retries/replans when necessary, and prepares approval requests for Juma.
+A proposal takes roughly 30 seconds. The slash command acknowledges immediately
+and the work happens in a detached child, so the handler never blocks.
 
-### OpenClaw
-Communication gateway. Receives and routes user interactions from Telegram. Must not become a competing autonomous brain. May delegate to Hermes.
+## Telegram commands
 
-### Telegram
-Human communication interface. Two bots are configured, one fronting Hermes and
-one fronting OpenClaw, each restricted to a single allowlisted account. Bot IDs
-and the allowlisted chat ID are deliberately not published here: that allowlist
-is the only authentication boundary in the system, and a bot ID is the numeric
-prefix of its token. See the operator runbook for the values.
+All are Telegram-only, require authorisation, and are checked twice: by the
+gateway against its channel allowlist, and again in `telegram_commands.py`
+against the configured user id.
 
-### Research Agent
-Standalone Python process. Bounded research and evidence gathering only. Distinguishes facts, assumptions, and unknowns. Returns structured JSON. Forbidden from external business actions.
+| Command | Does |
+|---|---|
+| `/apr_enquiry <text>` | Draft a proposal for a client enquiry. Acknowledges at once; the approval prompt follows. |
+| `/apr_list` | Pending requests — id, subject, timestamp, status. Summary only. |
+| `/apr_status <id>` | One request's status, plus the decision once made. |
+| `/apr_approve <id>` | Approve. This is what permits an external action. |
+| `/apr_reject <id>` | Reject. |
+| `/apr_resume <id>` | Run the external action for an already-approved request. |
 
-### Projects Agent
-Standalone Node.js process. Bounded ClickUp/project-management operations. Respects READ vs INTERNAL WRITE vs EXTERNAL ACTION authority levels. Must not become the global orchestrator.
+`/apr_list` and `/apr_status` return identifiers only. They deliberately do not
+return the proposal body, the evidence block, or research content — a listing
+should not dump client-facing prose and scraped third-party text into a chat.
 
-### Coding Agent
-Standalone Python process. Bounded software-engineering responsibilities only. Applies J15 verification:
-1. Syntax check always
-2. Run available tests when tests exist or were created
-3. Safely execute a trivial/diagnostic entry point when appropriate
+The `apr_` prefix is not decoration: `approve` is an OpenClaw built-in that would
+silently shadow a plugin command, and `status` is reserved outright.
 
-### Gemini
-Coding/research/proposal capability where appropriate. It is a capability available to the system, not the system's architectural brain.
+## The three agents
 
-### ClickUp
-Project/task management system. Integrated via REST API wrapper.
+Each is a standalone subprocess speaking JSON over stdin/stdout, with its own
+authority level. They are engaged together for every enquiry, and each reports
+honestly when it finds nothing.
 
-### GitHub
-Source control and code delivery. Integrated via `gh` CLI.
+**research** (`agents/research/main.py`) — Tavily search. A model first extracts
+2–4 focused queries from the enquiry, so the *problem domain* is searched rather
+than the client's prose. Results are filtered by relevance and dropped if they
+read as video transcripts or navigation chrome. If no model is available,
+research is skipped rather than run with a bad query. READ only.
 
-## Human Approval Boundary
+**projects** (`agents/projects/main.js`) — ClickUp, read-only at proposal time.
+Searches prior tasks for related work and returns **a count, never names**. Task
+names identify other clients, and a name reaching the proposal prompt would put
+one client's identity into another client's document.
 
-The system enforces three explicit authority levels:
+**coding** (`agents/coding/main.py`) — a `feasibility` action that reads the
+enquiry as prose and returns a component breakdown plus risks, each bound to a
+component. Feeds the proposal's approach section. **Nothing in this agent
+executes code**: no `exec`, no `eval`, no import of generated code, no test
+runner. Generated Python is checked with `ast.parse`, which builds a syntax tree
+and runs nothing.
 
-- **READ** — inspect information; research; analyse; retrieve data
-- **INTERNAL WRITE** — create/update internal working state; drafts; local files; internal project information
-- **EXTERNAL ACTION** — sending messages externally; publishing; submitting; committing/pushing where consequential; sending proposals to clients
+Their output reaches the model inside one delimited `GATHERED CONTEXT` block,
+marked as data rather than instruction. A section appears only when its agent
+returned something — so if an agent fails, the proposal says nothing about that
+dimension instead of inventing it.
 
-External actions require explicit human approval unless an already-defined safe policy explicitly permits it.
+## The provider chain
 
-The approval boundary:
-1. Detects when an action requires approval
-2. Describes the proposed action clearly
-3. Presents enough context for Juma to make an informed decision
-4. Stops execution while awaiting approval
-5. Resumes only after an explicit approval signal
-6. Never interprets silence as approval
-7. Never converts an error or timeout into approval
-8. Records the approval decision
-9. Executes only the approved action
-10. Verifies the resulting external state
-11. Reports the result
+`orchestrator/llm.py` is the only place that talks to a model.
 
-## Agentic Loop
+| Order | Provider | Key | Default model |
+|---|---|---|---|
+| 1 | Groq | `GROQ_API_KEY` | `openai/gpt-oss-120b` |
+| 2 | Gemini (AI Studio) | `GEMINI_API_KEY` | `gemini-2.5-flash` |
+| 3 | OpenRouter | `OPENROUTER_API_KEY` | `nvidia/nemotron-3.5-lightning:free` |
 
-Every meaningful task follows:
+Every free tier here rate-limits, so a single provider fails for reasons that
+have nothing to do with the enquiry. Providers are tried in order. Rate limits,
+5xx, timeouts and rejected credentials all move to the next one; a provider with
+no key is skipped silently, so the chain is whatever keys you actually hold.
 
-UNDERSTAND → CLASSIFY → IDENTIFY FACTS → IDENTIFY UNKNOWNS → DETERMINE CONSTRAINTS → PLAN → SELECT AGENTS → SELECT TOOLS → EXECUTE → OBSERVE → VERIFY → ADAPT / RETRY / REPLAN → PREPARE RESULT → REQUEST APPROVAL WHEN REQUIRED → WAIT FOR APPROVAL → EXECUTE APPROVED EXTERNAL ACTION → VERIFY OUTCOME → REPORT
+When every provider declines, it fails loudly. There is no fallback text
+anywhere: you get a proposal or an error, never a template.
 
-The system must not merely execute a predetermined automation script and call that "agentic".
+A reply that arrives but is unusable is **not** a fallthrough. A model answered
+and the answer was bad — that is `llm_invalid_output`, and it is terminal.
+Asking three providers in turn for prose that passes validation is how a
+plausible-but-wrong proposal eventually gets through.
 
-## Security Model
+Models are overridable with `GROQ_MODEL`, `GEMINI_MODEL`, `OPENROUTER_MODEL`.
 
-- No secrets in source code, logs, documentation, or responses
-- Secrets are loaded from environment variables or secure stores
-- `.gitignore` excludes `.env`, `config/*.secrets.json`, and evidence files
-- CI grep-check rejects tracked files containing secret patterns
-- Approval boundary prevents accidental external sends
-- Evidence files contain only non-sensitive proposal/business information
+## What the model is not allowed to do
 
-## How To Run The System
+The proposal prose comes from a model. The identity and every number do not.
 
-### Prerequisites
-- Python 3.11+
-- Node.js 20+
-- Git
-- Hermes Agent runtime
-- OpenClaw gateway
-- Telegram bots configured
+- `name`, `business` and contact details are appended by code after the model
+  returns, so a proposal cannot be signed with anyone else's name
+- rate, engagement types and payment terms are read from `config/juma.json` and
+  rendered in code; the model is forbidden to state any figure, and never sees
+  one
+- services are restricted to a candidate list built from config
+- validation rejects: quoted currency amounts, placeholder markers, services not
+  offered, a missing or over-long subject, and prior-work claims naming anyone
 
-### Environment Setup
+Commercial terms are framed as indicative, not a quote, because the
+clarification questions are unanswered — you cannot price work you cannot yet
+scope.
+
+## Approval
+
+Nothing external happens without `/apr_approve`. The request, the decision and
+the evidence are separate files under `.approval/` and `evidence/`, both
+gitignored. A decision is never overwritten by a second one. Re-running a
+workflow creates a new request rather than mutating an existing one.
+
+## Running it
+
+Requires Python 3.11+, Node 20+, and an OpenClaw gateway for Telegram.
+
 ```bash
-# Hermes runtime
-export TELEGRAM_BOT_TOKEN="..."
-export GEMINI_API_KEY="..."
-export CLICKUP_TOKEN="..."
-
-# OpenClaw runtime
-export OPENROUTER_API_KEY="..."
+git clone https://github.com/BukomaJumaMoya/agentic-os
+cd agentic-os
+pip install -r requirements.txt      # only needed for PDF rendering
 ```
 
-### Run Specialist Agents
+Run the workflow directly, without Telegram:
+
 ```bash
-# Research Agent
-python agents/research/main.py <<< '{"query":"competitor analysis","max_sources":3,"fetch_content":true}'
-
-# Projects Agent
-node agents/projects/main.js '{"action":"search_tasks","query":"proposal"}'
-
-# Coding Agent
-python agents/coding/main.py <<< '{"action":"explain","code":"def f(x): return x*2","language":"python"}'
+echo '{"enquiry": "We need appointment reminders from a spreadsheet."}' \
+  | python orchestrator/flagship.py
 ```
 
-### Run Orchestrator
+Run one agent:
+
 ```bash
-python orchestrator/orchestrator.py <<< '{"task":"Research competitor pricing for SaaS CRMs"}'
+echo '{"queries": ["appointment reminder automation"], "max_sources": 3}' \
+  | python agents/research/main.py
+echo '{"action": "list_spaces"}' | node agents/projects/main.js
+echo '{"action": "feasibility", "prompt": "..."}' | python agents/coding/main.py
 ```
 
-### Run Flagship Workflow
+Tests — all offline, no keys, no network:
+
 ```bash
-python orchestrator/flagship.py <<< '{"enquiry":"Hi, I need a web app. Budget $10k, timeline 2 months."}'
-```
-
-## How To Test It
-
-### Local Test Commands
-```bash
-# Approval boundary tests
-PYTHONPATH=. python tests/test_step6_approval.py
-
-# Flagship unit tests
 PYTHONPATH=. python tests/test_step7_flagship_unit.py
-
-# Flagship end-to-end tests
-PYTHONPATH=. python tests/test_step7_flagship_e2e.py
-
-# Flagship failure-injection tests
-PYTHONPATH=. python tests/test_step7_flagship_failures.py
-
-# Integration tests
-PYTHONPATH=. python tests/test_step7_flagship_integration.py
-
-# Syntax checks
-python -m py_compile agents/research/main.py agents/coding/main.py orchestrator/orchestrator.py orchestrator/approval.py orchestrator/flagship.py
-node --check agents/projects/main.js automation/clickup.js
+PYTHONPATH=. python tests/test_coding_agent.py
+node tests/test_projects_agent.js
 ```
 
-### CI Pipeline
-Push to `master` to trigger GitHub Actions `quality` workflow. It runs:
-- Repository integrity/secret scan
-- Python/Node.js/PowerShell syntax checks
-- Approval boundary tests
-- Flagship unit, E2E, failure-injection, and integration tests
-- Documentation consistency checks
+### Environment
 
-## Flagship Workflow
+| Variable | Needed for |
+|---|---|
+| `GROQ_API_KEY` / `GEMINI_API_KEY` / `OPENROUTER_API_KEY` | Any model call. At least one. |
+| `TAVILY_API_KEY` | Research. Without it, research is skipped. |
+| `CLICKUP_TOKEN` | Projects agent. |
+| `OPENCLAW_GATEWAY_TOKEN` | Talking to the gateway. |
+| `OPENCLAW_ALLOWED_USER_ID` | Who may approve. Falls back to `config/juma.json`. |
+| `TELEGRAM_BOT_TOKEN` | PDF delivery. Falls back to OpenClaw's config. |
 
-1. Receive unstructured client enquiry through Telegram
-2. Understand and classify it
-3. Extract known facts
-4. Identify unknown/missing information
-5. Determine constraints
-6. Decide which specialists/tools are needed
-7. Invoke Research when research is required
-8. Invoke Projects when ClickUp/project records are required
-9. Invoke Coding when technical analysis is required
-10. Synthesise the collected information
-11. Prepare a proposal draft
-12. Verify the proposal
-13. Present Juma with a concise approval request
-14. Wait for explicit approval
-15. Only then perform the approved external action
-16. Verify the result
-17. Report completion
+Optional: `CLICKUP_TEAM_ID`, `TAVILY_SEARCH_DEPTH`, `AGENTIC_STATE_DIR`,
+`CODING_AGENT_WORKSPACE`, `AGENTIC_PYTHON`, `OPENCLAW_GATEWAY_URL`.
 
-## Known Limitations
+**No key belongs in `config/juma.json`.** That file is committed. Credentials are
+read from the environment, and the code refuses rather than falling back to a
+committed file.
 
-- Research agent uses DuckDuckGo HTML scraping; may break if page layout changes
-- Projects agent uses hard-coded ClickUp team ID
-- Coding agent test execution requires pytest/npm to be installed; skipped if absent
-- OpenClaw → Hermes routing plugin artifact is implemented and loaded; Hermes invocation from OpenClaw verified through live agent tests
-- Approval UI is filesystem-based; no Telegram prompt delivery yet
-- External action execution is boundary-recorded only; not wired to Telegram/OpenClaw yet
-- Classification is keyword-based, not semantic
-- `.approval` directory is local filesystem only
-- Research agent occasionally returns `no_results` without fallback
-- Telegram bot token in OpenClaw config returns HTTP 401; Telegram E2E is not testable with current credentials
-- Deterministic all-message routing to Hermes would require a custom OpenClaw channel plugin beyond the installed SDK
-- OpenClaw scheduled task metadata may show stale `Runtime: stopped` even when gateway is healthy
+## What this deliberately does not do
 
-## Current Model/Runtime Assumptions
+**External actions deliver to the operator, not to clients.** An approved
+proposal is sent to *your* Telegram, not to the client. There is no email
+integration and no client-facing send path. You forward it yourself. This is the
+single most important thing to understand before trusting the word "approved".
 
-- Hermes primary model: `google/gemini-3.5-flash` via OpenRouter with fallback `openrouter/nvidia/nemotron-3.5-lightning:free`
-- Node.js: v22+ for Projects agent and automation
-- Python: 3.11+ for Research, Coding, and Orchestrator
-- Windows 11 host; bash-compatible shell for automation
-- No paid LLM subscriptions required; architecture is model-agnostic
+**Nothing executes generated code.** The coding agent writes code and test
+source; running it is a separate decision made elsewhere.
 
-## Future Roadmap
+**Research is third-party text.** Findings are claims from web pages, not
+verified facts, and they are labelled that way where they enter the prompt. They
+are also an injection surface: the prompt fences them and instructs the model to
+treat them as data, which is mitigation rather than a guarantee.
 
-- Implemented Telegram-based approval prompts
-- Implemented approved external action execution
-- Wire OpenClaw → Hermes routing plugin (`invoke_hermes`) and verify live gateway execution
-- Add semantic classification for enquiry routing
-- Improve research agent resilience
-- Add coverage measurement to CI
-- Add Windows runner for PowerShell syntax checks
+**Free tiers see your enquiries.** Every provider in the chain is a free tier,
+and free tiers are broadly where providers reserve the right to log prompts and
+train on them. Treat every run as disclosing the enquiry to whichever provider
+serves it. Client work that cannot be disclosed needs a paid tier with a data
+processing agreement.
 
-## Repository Structure
+## Status
+
+CI (`quality` and `smoke`) passes. It runs a credential scan over tracked files,
+syntax checks, and every test suite — approval boundary, flagship unit, e2e,
+failure injection, integration, workspace confinement, research, coding, PDF and
+projects. All of them run offline.
+
+Known open items:
+
+- The coding agent's `feasibility` action succeeds about 4 times in 5. The
+  failure is its own validation rejecting a risk that names no component — the
+  rule is deliberately strict, because a malformed reply is the model missing
+  its contract and hiding that would hide the rate.
+- `orchestrator/external_action.py` sends to the operator only, as above.
+- The Python side now has dependencies (`fpdf2` and its three transitive ones,
+  including a compiled Pillow) solely for PDF rendering. Everything else is
+  stdlib, and `proposal_pdf` imports lazily, so a machine without them produces
+  a proposal with no PDF rather than no proposal.
+- A ClickUp personal token was committed in this repository's history inside a
+  nested `.git.bak/` object store and is public. It has not been rewritten out.
+  Rotate that token.
+
+## Layout
 
 ```
-.
-├── agents/
-│   ├── coding/main.py
-│   ├── projects/main.js
-│   └── research/main.py
-├── automation/
-│   ├── clickup.js
-│   └── generate-proposal.ps1
-├── config/
-│   └── juma.json
-├── documentation/
-│   ├── PHASE-1-RECONNAISSANCE-REPORT.md
-│   ├── PHASE-2-DECISIONS.md
-│   ├── PHASE-2-IMPLEMENTATION-PLAN.md
-│   ├── coding-agent.md
-│   ├── projects-agent.md
-│   ├── research-agent.md
-│   └── stack.md
-├── orchestrator/
-│   ├── __init__.py
-│   ├── approval.py
-│   ├── flagship.py
-│   └── orchestrator.py
-├── tests/
-│   ├── test_step6_approval.py
-│   ├── test_step7_flagship_unit.py
-│   ├── test_step7_flagship_e2e.py
-│   ├── test_step7_flagship_failures.py
-│   └── test_step7_flagship_integration.py
-└── .github/workflows/quality.yml
+agents/         research (Tavily), projects (ClickUp), coding (feasibility)
+orchestrator/   llm (provider chain), proposal, research_query, flagship,
+                approval, telegram_approval, telegram_commands, enquiry_runner,
+                external_action, proposal_pdf
+tools/          OpenClaw plugin registering the /apr_* slash commands
+config/         juma.json — identity, services, rates. No credentials.
+tests/          offline suites; no network, no API keys
 ```

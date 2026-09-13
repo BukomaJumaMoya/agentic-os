@@ -129,11 +129,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ -f README.md ]; then
-            # Ensure README contains current model and completion status markers
-            if ! grep -q 'stepfun/step-3.7-flash:free' README.md; then
-              echo '::warning::README missing current model reference'
-            fi
-            if ! grep -q '26+3/29' README.md; then
-              echo '::warning::README completion count may be stale'
-            fi
+            # The old check looked for 'stepfun/step-3.7-flash:free', a model
+            # this project has not used for a long time -- it asserted a fact
+            # that had stopped being true and warned about its own staleness.
+            # Check for the things the README must not lose instead.
+            for needle in 'GROQ_API_KEY' 'apr_enquiry' 'approval'; do
+              if ! grep -qi "$needle" README.md; then
+                echo "::warning::README no longer documents $needle"
+              fi
+            done
           fi
