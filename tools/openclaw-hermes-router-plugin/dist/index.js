@@ -78,6 +78,74 @@ function normalizeSenderId(value) {
   return s || null;
 }
 
+// Slash commands for the approval pipeline.
+//
+// Names are prefixed because the bare verbs are unavailable:
+//   - "approve" is a built-in (OpenClaw's own exec/plugin approval, matched by
+//     /^\/?approve(?:\s|$)/i) but is NOT in the plugin reserved-name set, so
+//     registering it would succeed and then be silently shadowed at dispatch.
+//   - "status" is both a built-in and reserved; registering it fails outright.
+// Underscores, not hyphens: normalizeTelegramCommandName() rewrites "-" to "_"
+// when building the Telegram command menu, so a hyphenated name would register
+// under one key and appear in Telegram under another.
+//
+// `verb` is what orchestrator/telegram_commands.py parses; `name` is what the
+// user types.
+const APPROVAL_COMMANDS = [
+  { name: "apr_approve", verb: "APPROVE", acceptsArgs: true,  description: "Approve a pending approval request by id." },
+  { name: "apr_reject",  verb: "REJECT",  acceptsArgs: true,  description: "Reject a pending approval request by id." },
+  { name: "apr_status",  verb: "STATUS",  acceptsArgs: true,  description: "Show the status of an approval request by id." },
+  { name: "apr_resume",  verb: "RESUME",  acceptsArgs: true,  description: "Resume an approved external action by request id." },
+  { name: "apr_list",    verb: "LIST",    acceptsArgs: false, description: "List pending approval requests." },
+];
+
+/**
+ * Build one slash-command definition.
+ *
+ * These bypass the model entirely: the host matches the command before the
+ * agent is invoked, and returning without `continueAgent` ends the turn here.
+ * Authorisation is checked twice -- ctx.isAuthorizedSender (host, from the
+ * channel allowlist) and again inside telegram_commands.py against the
+ * configured allowlist.
+ */
+function buildApprovalCommand(def) {
+  return {
+    name: def.name,
+    description: def.description,
+    acceptsArgs: def.acceptsArgs,
+    requireAuth: true,
+    channels: ["telegram"],
+    async handler(ctx) {
+      if (!ctx?.isAuthorizedSender) {
+        return { text: JSON.stringify({ ok: false, error: "not_allowed" }, null, 2) };
+      }
+      const senderId = normalizeSenderId(ctx?.senderId);
+      if (!senderId) {
+        return {
+          text: JSON.stringify({
+            ok: false,
+            error: "no_verified_sender",
+            detail:
+              "The command context carried no senderId; refusing to act on " +
+              "an unattributed approval command.",
+          }, null, 2),
+        };
+      }
+      const args = def.acceptsArgs ? String(ctx?.args ?? "").trim() : "";
+      const text = args ? `${def.verb} ${args}` : def.verb;
+      try {
+        const result = await runTelegramCommand(senderId, text);
+        return { text: JSON.stringify(result, null, 2) };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return {
+          text: JSON.stringify({ ok: false, error: `/${def.name} failed: ${message}` }, null, 2),
+        };
+      }
+    },
+  };
+}
+
 const TELEGRAM_APPROVAL_DESCRIPTION =
   "REQUIRED handler for Telegram approval replies. Call this tool " +
   "whenever an incoming message matches 'APPROVE <id>', 'REJECT <id>', " +
@@ -184,7 +252,7 @@ async function invokeHermesViaRouter(message) {
   };
 }
 
-export default defineToolPlugin({
+const pluginEntry = defineToolPlugin({
   id: "openclaw-hermes-router",
   name: "OpenClaw Hermes Router",
   description: "Route OpenClaw messages to Hermes via the local Hermes HTTP router.",
@@ -295,3 +363,18 @@ export default defineToolPlugin({
     }),
   ],
 });
+
+// defineToolPlugin generates register() itself and only wires tools -- there is
+// no user hook in its options -- so wrap it to add the slash commands. The
+// generated register is writable/configurable, and base runs first so tool
+// registration is unchanged.
+const baseRegister = pluginEntry.register;
+pluginEntry.register = function register(api) {
+  const result = baseRegister.call(this, api);
+  if (typeof api?.registerCommand === "function") {
+    for (const def of APPROVAL_COMMANDS) api.registerCommand(buildApprovalCommand(def));
+  }
+  return result;
+};
+
+export default pluginEntry;

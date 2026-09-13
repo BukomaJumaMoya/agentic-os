@@ -265,8 +265,8 @@ def send_approval_prompt(request_id: str, proposal: dict) -> dict:
     message_lines += [
         "",
         "Reply with:",
-        f"APPROVE {request_id}",
-        f"REJECT {request_id}",
+        f"/apr_approve {request_id}",
+        f"/apr_reject {request_id}",
     ]
     text = "\n".join(message_lines)
 
