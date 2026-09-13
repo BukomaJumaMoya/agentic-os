@@ -24,11 +24,17 @@ import json
 import sys
 from pathlib import Path
 
-try:
-    from orchestrator import approval as _approval
-except ImportError:  # imported bare, with orchestrator/ on sys.path
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    from orchestrator import approval as _approval
+# Put the repo root ahead of this file's own directory on sys.path, BEFORE the
+# first orchestrator import. Running as a script ("python
+# orchestrator/telegram_commands.py") puts orchestrator/ on sys.path[0] -- the
+# subprocess cwd is never added -- and orchestrator/orchestrator.py then shadows
+# the orchestrator package, so "from orchestrator import approval" binds the
+# wrong module. A try/except around the import cannot recover from that: the
+# failed import leaves the shadowing module cached in sys.modules, so the retry
+# resolves to it again regardless of sys.path.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from orchestrator import approval as _approval  # noqa: E402
 
 ConfigError = _approval.ConfigError
 BASE = _approval.BASE

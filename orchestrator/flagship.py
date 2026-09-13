@@ -14,9 +14,15 @@ import uuid
 from pathlib import Path
 from datetime import datetime, timezone
 
-from orchestrator.approval import request_approval
-
 BASE = Path(__file__).resolve().parent.parent
+
+# Repo root ahead of this file's own directory, before the first orchestrator
+# import -- see the note in telegram_commands.py. orchestrator/orchestrator.py
+# shadows the package when this module runs as a script.
+sys.path.insert(0, str(BASE))
+
+from orchestrator.approval import request_approval  # noqa: E402
+
 # Mirrors orchestrator.approval.STATE_ROOT -- one knob to relocate runtime
 # state out of the repo tree (audit S-7 / P0-5).
 STATE_ROOT = Path(os.getenv("AGENTIC_STATE_DIR") or BASE).resolve()

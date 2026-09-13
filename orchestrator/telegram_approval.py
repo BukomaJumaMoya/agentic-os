@@ -15,11 +15,13 @@ import urllib.error
 from pathlib import Path
 from datetime import datetime, timezone
 
-try:
-    from orchestrator import approval as _approval
-except ImportError:  # imported bare, with orchestrator/ on sys.path (tests)
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    from orchestrator import approval as _approval
+# Repo root ahead of this file's own directory, before the first orchestrator
+# import -- see the note in telegram_commands.py. orchestrator/orchestrator.py
+# shadows the package when this module runs as a script, and a try/except cannot
+# recover because the failed import poisons sys.modules.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from orchestrator import approval as _approval  # noqa: E402
 
 ConfigError = _approval.ConfigError
 
