@@ -194,8 +194,15 @@ def run_workflow(enquiry: str, approval_mode: bool = True, force_agent: str = No
 
         if agent == "research":
             research_findings = output
-            if research_findings.get("status") == "no_results":
-                msg = "Research returned no results"
+            # blocked / search_failed / no_results are all "no evidence", but
+            # they are recorded distinctly so a provider block is never filed
+            # as an empty search.
+            research_status = research_findings.get("status")
+            if research_status in ("no_results", "blocked", "search_failed"):
+                detail = (research_findings.get("search") or {}).get("detail")
+                msg = f"Research returned {research_status}"
+                if detail:
+                    msg = f"{msg}: {detail}"
                 if msg not in specialist_errors:
                     specialist_errors.append({"agent": agent, "error": msg})
                 if msg not in retry_log:
@@ -207,7 +214,11 @@ def run_workflow(enquiry: str, approval_mode: bool = True, force_agent: str = No
                     "facts": [],
                     "assumptions": ["No live research sources were reachable."],
                     "unknowns": ["Unable to gather external evidence for the requested research."],
-                    "status": "fallback_no_results"
+                    "status": "fallback_no_results",
+                    # Keep why, not just that. Without these the fallback erases
+                    # the blocked/failed/empty distinction the agent just made.
+                    "research_status": research_status,
+                    "search": research_findings.get("search"),
                 }
         elif agent == "projects":
             project_context = output

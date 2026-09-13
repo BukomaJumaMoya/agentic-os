@@ -46,17 +46,53 @@ class SimpleLinkParser(HTMLParser):
             self.title += data
 
 
+# A challenge page is served with a 200/202 and looks like an ordinary page, so
+# it has to be recognised by content as well as by status.
+_CHALLENGE_RE = re.compile(r"anomaly|challenge|captcha|unusual traffic", re.IGNORECASE)
+
+
 def search_web(query, max_results=5):
+    """Return (results, meta).
+
+    meta always records what actually happened -- the URL, the HTTP status and
+    a classified outcome -- so that a provider block, a transport failure and a
+    genuinely empty result set can never be reported as the same thing.
+
+    outcome is one of: complete | no_results | blocked | search_failed
+    """
     encoded = urllib.parse.quote(query)
     url = f"https://html.duckduckgo.com/html/?q={encoded}"
+    meta = {"url": url, "http_status": None, "outcome": None,
+            "detail": None, "links_seen": 0}
     req = urllib.request.Request(url, headers={
         "User-Agent": f"{AGENT_NAME}/{VERSION}"
     })
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        html = resp.read().decode("utf-8", errors="replace")
+
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            meta["http_status"] = getattr(resp, "status", None)
+            html = resp.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as e:
+        meta["http_status"] = e.code
+        meta["outcome"] = "blocked" if e.code in (202, 403, 429) else "search_failed"
+        meta["detail"] = f"HTTP {e.code}: {e.reason}"
+        return [], meta
+    except Exception as e:
+        meta["outcome"] = "search_failed"
+        meta["detail"] = f"{type(e).__name__}: {e}"
+        return [], meta
+
+    # 202 Accepted from this endpoint is an anti-bot challenge, not a result
+    # set. Reporting it as "no results" is a lie the caller cannot see through.
+    if meta["http_status"] == 202 or _CHALLENGE_RE.search(html):
+        meta["outcome"] = "blocked"
+        meta["detail"] = (f"search provider returned an anti-bot challenge "
+                          f"(HTTP {meta['http_status']}), not a result set")
+        return [], meta
 
     parser = SimpleLinkParser()
     parser.feed(html)
+    meta["links_seen"] = len(parser.links)
 
     results = []
     for link in parser.links[:max_results]:
@@ -67,7 +103,12 @@ def search_web(query, max_results=5):
                 "title": link.get("title", "") or href,
                 "snippet": ""
             })
-    return results
+
+    meta["outcome"] = "complete" if results else "no_results"
+    if not results:
+        meta["detail"] = (f"provider returned HTTP {meta['http_status']} with "
+                          f"{meta['links_seen']} links, none usable as results")
+    return results, meta
 
 
 def fetch_page(url):
@@ -104,12 +145,19 @@ def main():
     facts = []
 
     try:
-        search_results = search_web(query, max_sources)
+        search_results, search_meta = search_web(query, max_sources)
     except Exception as e:
-        unknowns.append(f"Web search failed: {e}")
+        # search_web is meant to classify its own failures; this is a bug guard.
         search_results = []
+        search_meta = {"url": None, "http_status": None, "outcome": "search_failed",
+                       "detail": f"unhandled {type(e).__name__}: {e}", "links_seen": 0}
 
-    if not search_results:
+    outcome = search_meta.get("outcome")
+    if outcome == "blocked":
+        unknowns.append(f"Web search blocked: {search_meta.get('detail')}")
+    elif outcome == "search_failed":
+        unknowns.append(f"Web search failed: {search_meta.get('detail')}")
+    elif outcome == "no_results":
         unknowns.append("No search results returned")
 
     for r in search_results:
@@ -135,7 +183,9 @@ def main():
         "facts": facts,
         "assumptions": assumptions,
         "unknowns": unknowns,
-        "status": "complete" if findings else "no_results"
+        # blocked / search_failed / no_results are distinct states, not one.
+        "status": "complete" if findings else outcome,
+        "search": search_meta,
     }
     print(json.dumps(output, indent=2))
     sys.exit(0)
