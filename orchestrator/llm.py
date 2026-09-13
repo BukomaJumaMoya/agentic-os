@@ -109,6 +109,24 @@ class LLMError(RuntimeError):
         self.attempts = attempts or []
 
 
+# Prefix on an attempt reason meaning "the model replied and the reply broke the
+# schema", as opposed to "this provider could not serve us".
+SCHEMA_REJECTION_MARKER = "[schema-rejected] "
+
+_SCHEMA_REJECTION_TEXT = (
+    "does not match the expected schema",
+    "failed_generation",
+    "response_format",
+)
+
+
+def _is_schema_rejection(code, detail) -> bool:
+    if code != 400:
+        return False
+    lowered = (detail or "").lower()
+    return any(t in lowered for t in _SCHEMA_REJECTION_TEXT)
+
+
 class _Fallthrough(Exception):
     """This provider cannot serve the request now; try the next one."""
 
@@ -140,7 +158,16 @@ def _post(url, headers, payload, timeout):
             pass
         # 429 and 5xx are the provider; 401/403 is our key. Both are reasons to
         # use a different provider, not reasons to abandon the run.
-        raise _Fallthrough(f"HTTP {e.code}: {detail}")
+        #
+        # A constrained-decoding rejection is different in kind. Groq answers a
+        # schema violation with 400 "Generated JSON does not match the expected
+        # schema": the provider was reachable and the model replied -- the reply
+        # was unusable. Still worth trying the next provider, since a different
+        # model may conform, but the attempt is tagged so that an exhausted
+        # chain reports invalid_output rather than claiming nothing was
+        # reachable.
+        marker = SCHEMA_REJECTION_MARKER if _is_schema_rejection(e.code, detail) else ""
+        raise _Fallthrough(f"{marker}HTTP {e.code}: {detail}")
     except Exception as e:
         raise _Fallthrough(f"{type(e).__name__}: {e}")
 
@@ -195,15 +222,16 @@ def _openai_compatible(url, key, model, system, user, max_tokens, temperature,
 
 
 def _call_groq(key, model, system, user, max_tokens, temperature, timeout,
-               schema=None):
+               schema=None, strict_schema=True):
     return _openai_compatible(
         "https://api.groq.com/openai/v1/chat/completions",
         key, model, system, user, max_tokens, temperature, timeout,
-        schema=schema, strict_schema=model in GROQ_STRICT_SCHEMA_MODELS)
+        schema=schema,
+        strict_schema=strict_schema and model in GROQ_STRICT_SCHEMA_MODELS)
 
 
 def _call_openrouter(key, model, system, user, max_tokens, temperature, timeout,
-                     schema=None):
+                     schema=None, strict_schema=True):
     # json_object only. Schema support varies per upstream model on OpenRouter
     # and is not documented per-model for the free nemotron endpoint; sending an
     # unsupported response_format would 400 and read as an outage.
@@ -218,7 +246,7 @@ def _call_openrouter(key, model, system, user, max_tokens, temperature, timeout,
 
 
 def _call_gemini(key, model, system, user, max_tokens, temperature, timeout,
-                 schema=None):
+                 schema=None, strict_schema=True):
     """AI Studio generateContent.
 
     The key goes in the x-goog-api-key HEADER, which is what Google's own REST
@@ -322,7 +350,7 @@ def configured_providers():
 
 def complete(system: str, user: str, *, model: str = None, max_tokens: int = 2000,
              temperature: float = 0.3, timeout: int = DEFAULT_TIMEOUT,
-             schema: dict = None) -> dict:
+             schema: dict = None, strict_schema: bool = True) -> dict:
     """First usable completion from the provider chain.
 
     Returns {"text", "model", "provider", "usage", "raw", "attempts"}. Raises
@@ -335,6 +363,13 @@ def complete(system: str, user: str, *, model: str = None, max_tokens: int = 200
     ``schema`` requests structured output where the provider supports it. It is
     an optimisation, never a substitute for validation: a provider that ignores
     it still has its reply checked by exactly the same rules.
+
+    ``strict_schema=False`` asks for JSON without constrained decoding. Groq's
+    strict mode requires additionalProperties:false and every property listed as
+    required; a schema that relaxes either is rejected outright with HTTP 400
+    before the model runs. For a reply whose shape is genuinely variable, a
+    guaranteed-JSON object plus validation in code beats a decoder that refuses
+    the schema.
     """
     available = configured_providers()
     if not available:
@@ -358,7 +393,8 @@ def complete(system: str, user: str, *, model: str = None, max_tokens: int = 200
         chosen = model or _env(provider["model_env"]) or provider["default_model"]
         try:
             result = provider["call"](key, chosen, system, user, max_tokens,
-                                      temperature, timeout, schema=schema)
+                                      temperature, timeout, schema=schema,
+                                      strict_schema=strict_schema)
         except _Fallthrough as e:
             attempts.append({"provider": provider["name"], "model": chosen,
                              "outcome": "failed", "reason": e.reason})
@@ -372,6 +408,13 @@ def complete(system: str, user: str, *, model: str = None, max_tokens: int = 200
 
     tried = [a for a in attempts if a["outcome"] == "failed"]
     summary = "; ".join(f"{a['provider']}: {a['reason']}" for a in tried)
+    # If any provider rejected the model's own output against the schema, the
+    # honest report is that the reply was unusable -- not that nothing answered.
+    if any(SCHEMA_REJECTION_MARKER in (a.get("reason") or "") for a in tried):
+        raise LLMError(
+            "model output was rejected against the requested schema "
+            f"({len(tried)} provider(s) tried): {summary}",
+            kind="invalid_output", detail=summary, attempts=attempts)
     raise LLMError(
         f"every configured provider declined ({len(tried)} tried): {summary}",
         kind="api_error", detail=summary, attempts=attempts)
