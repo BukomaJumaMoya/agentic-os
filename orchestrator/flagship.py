@@ -57,15 +57,19 @@ def classify_enquiry(text: str) -> dict:
     for domain, kws in signals.items():
         hits[domain] = [kw for kw in kws if kw in t]
 
-    selected_agents = []
-    if any(hits["research"]):
-        selected_agents.append("research")
-    if any(hits["projects"]):
-        selected_agents.append("projects")
-    if any(hits["coding"]):
-        selected_agents.append("coding")
-    if not selected_agents:
-        selected_agents = ["research"]
+    # All three, by construction, for an inbound client enquiry.
+    #
+    # Keyword selection did not work and could not: the Brown Optical enquiry
+    # scored zero hits across every domain list, so it fell through to the
+    # ["research"] default and projects and coding never ran at all. The default
+    # hid the miss rather than surfacing it.
+    #
+    # Each agent covers a dimension that is relevant to any enquiry by
+    # definition -- prior experience, technical feasibility, domain research --
+    # and each already reports honestly when it finds nothing. Deciding
+    # relevance up front, from keywords, discarded evidence before anyone looked
+    # at it. The hits are still recorded, as a reason rather than a gate.
+    selected_agents = ["research", "projects", "coding"]
 
     missing = []
     if "budget" not in t and "quote" not in t and "estimate" not in t:
@@ -139,6 +143,46 @@ def _synthesis_failed(status, error, enquiry, classification, specialist_outputs
     }
 
 
+def _deliver_proposal_document(proposal: dict, config: dict) -> dict:
+    """Render the proposal as a PDF and send it as a Telegram document.
+
+    Entirely best effort. Every failure here is reported and none of them
+    changes the approval outcome: the plain-text proposal is the canonical
+    artefact and it has already been delivered in the prompt. A missing PDF is
+    a missing convenience, not a missing proposal.
+    """
+    try:
+        from orchestrator import proposal_pdf
+        from orchestrator.telegram_approval import send_document, _allowed_user_id
+    except Exception as e:
+        return {"attempted": False, "document_status": "not_attempted",
+                "reason": f"delivery modules unavailable: {e}"}
+
+    if not proposal_pdf.available():
+        return {"attempted": False, "document_status": "not_attempted",
+                "reason": "fpdf2 is not installed; proposal delivered as text only"}
+
+    try:
+        out_dir = STATE_ROOT / "evidence"
+        path = proposal_pdf.render(
+            proposal, config,
+            out_dir / proposal_pdf.filename_for(proposal, config))
+    except Exception as e:
+        return {"attempted": True, "document_status": "render_failed",
+                "reason": f"{type(e).__name__}: {e}"}
+
+    try:
+        result = send_document(
+            _allowed_user_id(), path,
+            caption=f"Proposal draft - {proposal.get('subject') or ''}"[:1024])
+    except Exception as e:
+        return {"attempted": True, "document_status": "transport_failed",
+                "reason": f"{type(e).__name__}: {e}", "path": str(path)}
+    result["attempted"] = True
+    result["path"] = str(path)
+    return result
+
+
 def run_workflow(enquiry: str, approval_mode: bool = True, force_agent: str = None) -> dict:
     if not enquiry or not enquiry.strip():
         return {
@@ -174,6 +218,17 @@ def run_workflow(enquiry: str, approval_mode: bool = True, force_agent: str = No
     external_actions = []
     retry_log = []
 
+    # Derived once and shared: research searches the web with it, projects
+    # searches prior work with it. Both need the problem domain rather than the
+    # client's prose, and neither should pay for a second extraction.
+    query_extraction = None
+    query_error = None
+    if {"research", "projects"} & set(classification["selected_agents"]):
+        try:
+            query_extraction = extract_queries(enquiry)
+        except (ConfigError, LLMError) as e:
+            query_error = str(e)
+
     for agent in classification["selected_agents"]:
         payload = {}
         if agent == "research":
@@ -181,20 +236,19 @@ def run_workflow(enquiry: str, approval_mode: bool = True, force_agent: str = No
             # company name included -- to a third-party search API and returned
             # CRM templates and a YouTube video for an appointment-reminder
             # problem. A model names the domain instead.
-            try:
-                extraction = extract_queries(enquiry)
-            except (ConfigError, LLMError) as e:
+            if query_error is not None:
                 research_findings = {
                     "agent": "research", "queries": [], "findings": [],
                     "facts": [], "assumptions": [],
                     "unknowns": ["No research was attempted: search queries "
                                  "could not be derived from the enquiry."],
                     "status": "skipped_no_queries",
-                    "search": {"outcome": "skipped", "detail": str(e)[:300]},
+                    "search": {"outcome": "skipped", "detail": query_error[:300]},
                 }
                 specialist_errors.append(
-                    {"agent": agent, "error": f"research skipped: {e}"})
+                    {"agent": agent, "error": f"research skipped: {query_error}"})
                 continue
+            extraction = query_extraction or {"queries": []}
             if not extraction["queries"]:
                 reason = extraction.get("skipped_reason") or \
                     "the enquiry was too vague to search for usefully"
@@ -211,9 +265,23 @@ def run_workflow(enquiry: str, approval_mode: bool = True, force_agent: str = No
                        "fetch_content": True}
             research_query_meta = extraction
         elif agent == "projects":
-            payload = {"action": "search_tasks", "query": enquiry[:100]}
+            # Read-only, and searched by domain rather than by the client's
+            # prose -- enquiry[:100] had the same defect the research query did.
+            # No task is created at proposal time.
+            domain = (query_extraction or {}).get("domain") or ""
+            if not domain:
+                project_context = {
+                    "agent": "projects", "status": "skipped_no_query",
+                    "detail": "no problem domain could be derived from the enquiry",
+                }
+                continue
+            payload = {"action": "search_tasks", "query": domain}
         elif agent == "coding":
-            payload = {"action": "explain", "code": enquiry[:200], "language": "python"}
+            # The enquiry is prose, not source. The previous payload passed it
+            # as `code` to an `explain` action, asking the agent to read a
+            # client's sentences as if they were Python.
+            payload = {"action": "feasibility", "prompt": enquiry,
+                       "language": "python"}
 
         # bounded retry for transient/unexpected tool responses
         output, error = _exec_with_retry(agent, payload, retries=2)
@@ -263,9 +331,38 @@ def run_workflow(enquiry: str, approval_mode: bool = True, force_agent: str = No
                     "search": research_findings.get("search"),
                 }
         elif agent == "projects":
-            project_context = output
+            # Counts only. Task names in this workspace identify OTHER clients
+            # -- "Beta Industries - Mobile App Development Proposal" is a real
+            # example -- and a name reaching the proposal prompt is one client's
+            # identity appearing in another client's document. Passing only a
+            # count makes that leak impossible rather than filtered.
+            # An agent whose output does not match the expected shape must not
+            # take down the workflow: record nothing for that dimension and
+            # carry on, exactly as if it had returned nothing.
+            block = (output or {}).get("result")
+            block = block if isinstance(block, dict) else {}
+            tasks = block.get("tasks") or []
+            project_context = {
+                "agent": "projects",
+                "status": output.get("status", "success"),
+                "prior_engagements": len(tasks),
+                "matched_domain": (query_extraction or {}).get("domain") or "",
+                "scanned": block.get("scanned"),
+                "note": "counts only; task names are withheld because they "
+                        "identify other clients",
+            }
         elif agent == "coding":
-            coding_context = output
+            result_block = (output or {}).get("result")
+            result_block = result_block if isinstance(result_block, dict) else {}
+            coding_context = {
+                "agent": "coding",
+                "status": output.get("status", "success"),
+                "summary": result_block.get("summary", ""),
+                "components": result_block.get("components") or [],
+                "risks": result_block.get("findings") or [],
+                "unknowns": result_block.get("unknowns") or [],
+                "generation": (output or {}).get("generation"),
+            }
 
     specialist_outputs = {
         "research": research_findings,
@@ -306,6 +403,7 @@ def run_workflow(enquiry: str, approval_mode: bool = True, force_agent: str = No
     request_id = None
     telegram_prompt = None
     prompt_delivered = None
+    document_delivery = None
     if approval_mode:
         approval_record = request_approval(proposal, enquiry)
         request_id = approval_record.get("request_id")
@@ -316,6 +414,13 @@ def run_workflow(enquiry: str, approval_mode: bool = True, force_agent: str = No
             telegram_prompt = {"sent": False, "reason": f"send_approval_prompt raised: {e}"}
         prompt_delivered = bool((telegram_prompt or {}).get("sent"))
 
+        # Two messages, deliberately. The prompt is the approval boundary and
+        # keeps the gateway's delivery vocabulary; the PDF is an attachment the
+        # gateway cannot carry and goes via the Bot API with its own vocabulary.
+        # A PDF that fails must never make a delivered prompt look undelivered,
+        # so this result is recorded separately and never feeds prompt_delivered.
+        document_delivery = _deliver_proposal_document(proposal, config)
+
     external_action = {
         "type": "send_proposal",
         "request_id": request_id,
@@ -325,6 +430,7 @@ def run_workflow(enquiry: str, approval_mode: bool = True, force_agent: str = No
         "idempotency_key": request_id,
         "retry_safe": True,
         "telegram_prompt": telegram_prompt,
+        "document_delivery": document_delivery,
     }
     external_actions.append(external_action)
 

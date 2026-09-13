@@ -48,6 +48,7 @@ VALID = {
     "summary": "Adds a guard so an empty sequence returns zero instead of raising.",
     "code": "def average(values):\n    if not values:\n        return 0\n    return sum(values) / len(values)\n",
     "language": "python",
+    "components": [],
     "findings": [{"severity": "high",
                   "detail": "Division by zero when values is empty.",
                   "location": "return total / len(values)"}],
@@ -101,6 +102,103 @@ def test_explain_calls_the_model_and_does_not_echo_input():
     assert marker in stub.calls[0]["user"]
     assert reply["summary"] != marker
     ok("explain_calls_the_model_and_does_not_echo_input")
+
+
+def _feasibility_reply(**overrides):
+    """Flat reply shape, as the loosened feasibility schema asks for."""
+    d = {
+        "summary": "The work splits into ingestion, scheduling and dispatch.",
+        "components": ["Importer - reads the spreadsheet",
+                       "Dispatcher - sends the messages"],
+        "risks": ["Importer: concurrent edits to the sheet lose rows"],
+        "assumptions": ["The spreadsheet stays the source of truth for now."],
+        "unknowns": ["Which channels are actually required."],
+    }
+    d.update(overrides)
+    return json.dumps(d)
+
+
+def test_feasibility_accepts_the_flat_shape():
+    with _Stub(_feasibility_reply()):
+        reply, code, _, _ = coding.run_action(
+            {"action": "feasibility", "prompt": "a system", "language": "python"})
+    assert code == ""
+    # Flat strings are rebuilt into the internal structure.
+    assert reply["components"][0]["name"] == "Importer"
+    assert reply["components"][0]["purpose"] == "reads the spreadsheet"
+    assert reply["findings"][0]["location"] == "Importer"
+    ok("feasibility_accepts_the_flat_shape")
+
+
+def test_feasibility_requires_components_and_forbids_code():
+    with _Stub(_feasibility_reply(components=[])):
+        try:
+            coding.run_action({"action": "feasibility", "prompt": "x", "language": "python"})
+        except llm.LLMError as e:
+            assert "component breakdown" in str(e)
+        else:
+            raise AssertionError("feasibility with no components accepted")
+
+    with _Stub(_feasibility_reply(code="print(1)")):
+        try:
+            coding.run_action({"action": "feasibility", "prompt": "x", "language": "python"})
+        except llm.LLMError as e:
+            assert "must not return code" in str(e)
+        else:
+            raise AssertionError("feasibility returning code accepted")
+    ok("feasibility_requires_components_and_forbids_code")
+
+
+def test_feasibility_risk_must_name_a_component():
+    """No unbound risk may reach the proposal.
+
+    Enforced by dropping it, not by rejecting the whole reply: discarding five
+    good components because the sixth risk was phrased loosely is the same
+    brittleness as failing a proposal over a three-character subject. The drop
+    is counted so a model that routinely fails to bind stays visible.
+    """
+    with _Stub(_feasibility_reply(
+            risks=["Importer: concurrent edits lose rows",
+                   "something might go wrong somewhere"])):
+        reply, _, _, _ = coding.run_action(
+            {"action": "feasibility", "prompt": "x", "language": "python"})
+    assert len(reply["findings"]) == 1
+    assert reply["findings"][0]["location"] == "Importer"
+    assert reply["dropped_unbound_risks"] == 1
+    # Every surviving risk names a component.
+    assert all(f["location"] for f in reply["findings"])
+    ok("feasibility_risk_must_name_a_component")
+
+
+def test_feasibility_still_rejects_execution_claims():
+    """Loosening the schema must not loosen the content rules."""
+    with _Stub(_feasibility_reply(summary="I ran the integration and it works end to end.")):
+        try:
+            coding.run_action({"action": "feasibility", "prompt": "x", "language": "python"})
+        except llm.LLMError as e:
+            assert "claims code was run" in str(e)
+        else:
+            raise AssertionError("execution claim accepted under the flat schema")
+    with _Stub(_feasibility_reply(components=["Importer - TODO decide this"])):
+        try:
+            coding.run_action({"action": "feasibility", "prompt": "x", "language": "python"})
+        except llm.LLMError as e:
+            assert "placeholder" in str(e)
+        else:
+            raise AssertionError("placeholder accepted under the flat schema")
+    ok("feasibility_still_rejects_execution_claims")
+
+
+def test_malformed_components_are_rejected():
+    bad = [{"name": "", "purpose": "x"}]
+    with _Stub(_reply(components=bad)):
+        try:
+            coding.run_action({"action": "generate", "prompt": "x", "language": "python"})
+        except llm.LLMError as e:
+            assert "component has no name" in str(e)
+        else:
+            raise AssertionError("nameless component accepted")
+    ok("malformed_components_are_rejected")
 
 
 def test_generation_evidence_is_recorded():

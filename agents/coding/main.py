@@ -55,7 +55,7 @@ sys.path.insert(0, str(BASE))
 from orchestrator import llm as _llm  # noqa: E402
 
 AGENT = "coding"
-VERSION = "2.0.0"
+VERSION = "2.1.0"
 PROMPT_VERSION = "coding/v1"
 
 WORKSPACE_ROOT = Path(os.getenv("CODING_AGENT_WORKSPACE") or (BASE / "workspace")).resolve()
@@ -102,7 +102,10 @@ ALLOWED_ACTIONS = {
     "explain",
     "refactor",
     "tests",
-    "document"
+    "document",
+    # Reads an enquiry as prose, not as source, and returns a component
+    # breakdown plus technical risks. Feeds the proposal's approach section.
+    "feasibility",
 }
 FORBIDDEN_ACTIONS = [
     "send_message",
@@ -117,6 +120,8 @@ FORBIDDEN_ACTIONS = [
 CODE_ACTIONS = {"generate", "refactor", "tests", "document"}
 # Actions whose product is a judgement about code the caller supplied.
 ANALYSIS_ACTIONS = {"review", "debug"}
+# Actions whose product is a component breakdown rather than code or a review.
+DESIGN_ACTIONS = {"feasibility"}
 
 MAX_INPUT_CHARS = 20000
 
@@ -188,7 +193,7 @@ def validate_input(data):
         return f"Action '{action}' is forbidden for this agent."
     if action not in ALLOWED_ACTIONS:
         return f"Unknown action: {action}. Allowed: {sorted(ALLOWED_ACTIONS)}"
-    if action in ("generate", "refactor") and not data.get("prompt"):
+    if action in ("generate", "refactor", "feasibility") and not data.get("prompt"):
         return f"Action '{action}' requires 'prompt'"
     if action in ("review", "debug", "explain", "tests", "document") and not data.get("code"):
         return f"Action '{action}' requires 'code'"
@@ -233,6 +238,10 @@ Return ONLY a JSON object with exactly these keys:
   "summary": "2-4 sentences: what you did and why. Plain, specific, no marketing.",
   "code": "the complete source, or an empty string for actions that produce no code",
   "language": "the language of `code`, lowercase, or an empty string when there is no code",
+  "components": [
+    {"name": "short component name",
+     "purpose": "one clause on what it does"}
+  ],
   "findings": [
     {"severity": "high|medium|low",
      "detail": "what is wrong and what it causes",
@@ -243,6 +252,23 @@ Return ONLY a JSON object with exactly these keys:
 }
 """
 
+FEASIBILITY_CONTRACT = """\
+Return ONLY a JSON object with exactly these keys:
+
+{
+  "summary": "2-4 sentences on how the work breaks down and what drives the risk",
+  "components": ["ComponentName - one clause on what it does", "..."],
+  "risks": ["ComponentName: what could go wrong and what it causes", "..."],
+  "assumptions": ["each assumption you made"],
+  "unknowns": ["anything the enquiry does not say that you would need to know"]
+}
+
+Each entry in "components" and "risks" is a PLAIN STRING, not an object. Start
+every risk with the name of the component it applies to, followed by a colon, so
+a risk is always attached to something concrete. Do not return code.
+"""
+
+
 ACTION_BRIEF = {
     "generate": "Write new code satisfying the request. Return the complete source in `code`. `findings` may be empty.",
     "refactor": "Restructure the given code without changing its observable behaviour. Return the full rewritten source in `code`, and use `findings` to record what you changed and why.",
@@ -250,6 +276,14 @@ ACTION_BRIEF = {
     "document": "Add or improve documentation for the given code. Return the complete documented source in `code`, preserving behaviour exactly.",
     "review": "Review the given code. `findings` must be non-empty unless the code is genuinely sound, in which case say so in `summary` and return an empty `findings`. Leave `code` empty.",
     "debug": "Diagnose the described defect in the given code. `findings` must identify the cause with a location. Put a corrected version in `code` only if you are confident; otherwise leave `code` empty and explain in `unknowns`.",
+    "feasibility": (
+        "Read the client enquiry and assess how the work breaks down. Return the "
+        "components you would build in `components`, and the technical risks in "
+        "`findings` with `location` naming the component each risk attaches to. "
+        "Leave `code` empty -- nothing is being written yet. This is a sketch for "
+        "scoping a conversation, not a design document: if the enquiry does not "
+        "say enough to judge something, put it in `unknowns` rather than assuming."
+    ),
     "explain": "Explain what the given code does, in `summary`. Leave `code` empty and `findings` empty unless you noticed a real defect while reading.",
 }
 
@@ -265,17 +299,118 @@ _SECRET_RE = re.compile(
     r"tvly-[A-Za-z0-9\-]{16,}|pk_\d{6,}_[A-Za-z0-9]{10,}")
 
 
+# Feasibility asks for a sketch, and the strict decoder was rejecting the
+# model's own output on roughly half of calls: Groq answers a constrained-
+# decoding violation with 400 "Generated JSON does not match the expected
+# schema". Nested objects, a severity enum and additionalProperties:false are
+# three separate ways for a reply to miss.
+#
+# So this action gets a flat schema -- arrays of plain strings, no enum,
+# additionalProperties permitted. That is a relaxation of SHAPE only. Every
+# content rule in _validate still applies: no execution claims, no placeholder
+# markers, no credential-shaped literals, components required, code forbidden,
+# and each risk must still name a component. The structure is reconstructed in
+# code from the flat strings, so the rest of the pipeline sees what it always
+# saw.
+def _feasibility_schema():
+    return {
+        "type": "object",
+        # Kept false: Groq's strict mode rejects any schema that relaxes it,
+        # before the model runs. This schema is sent WITHOUT strict decoding
+        # (see run_action), so it documents the shape and enables json_object
+        # mode rather than constraining the sampler.
+        "additionalProperties": False,
+        "required": ["summary", "components", "risks", "assumptions", "unknowns"],
+        "properties": {
+            "summary": {"type": "string"},
+            "components": {"type": "array", "items": {"type": "string"}},
+            "risks": {"type": "array", "items": {"type": "string"}},
+            "assumptions": {"type": "array", "items": {"type": "string"}},
+            "unknowns": {"type": "array", "items": {"type": "string"}},
+        },
+    }
+
+
+def _normalise_feasibility(data):
+    """Rebuild the internal shape from the flat reply.
+
+    "DataIngestion - reads the spreadsheet" -> {"name", "purpose"}
+    "DataIngestion: concurrent edits lose rows" -> {"detail", "location"}
+
+    Splitting is best effort; an unsplittable line keeps its whole text as the
+    name or detail rather than being dropped. Nothing is invented.
+    """
+    components = []
+    for item in data.get("components") or []:
+        if not isinstance(item, str) or not item.strip():
+            continue
+        text = " ".join(item.split())
+        name, purpose = text, ""
+        for sep in (" - ", " -- ", ": ", " \u2013 ", " \u2014 "):
+            if sep in text:
+                name, purpose = text.split(sep, 1)
+                break
+        components.append({"name": name.strip()[:80], "purpose": purpose.strip()})
+
+    names = [c["name"].lower() for c in components]
+    risks = []
+    dropped = []
+    for item in data.get("risks") or []:
+        if not isinstance(item, str) or not item.strip():
+            continue
+        text = " ".join(item.split())
+        location, detail = "", text
+        head = text.split(":", 1)
+        if len(head) == 2 and head[0].strip().lower() in names:
+            location, detail = head[0].strip(), head[1].strip()
+        else:
+            # Bind by mention when the model did not use the "Component:" form.
+            for c in components:
+                if c["name"] and c["name"].lower() in text.lower():
+                    location = c["name"]
+                    break
+        if not location:
+            # The invariant is that no unbound risk reaches the proposal, and
+            # dropping one enforces it exactly as well as rejecting the whole
+            # reply -- without discarding five good components because the
+            # sixth risk was phrased loosely. The count is recorded rather than
+            # swallowed, so a model that routinely fails to bind is visible.
+            dropped.append(detail)
+            continue
+        risks.append({"severity": "unspecified", "detail": detail, "location": location})
+
+    out = dict(data)
+    out["components"] = components
+    out["findings"] = risks
+    out["dropped_unbound_risks"] = len(dropped)
+    out.setdefault("code", "")
+    out.setdefault("language", "")
+    return out
+
+
 def _reply_schema():
     """Schema for providers that constrain decoding (see llm.complete)."""
     return {
         "type": "object",
         "additionalProperties": False,
-        "required": ["summary", "code", "language", "findings", "assumptions",
-                     "unknowns"],
+        "required": ["summary", "code", "language", "components", "findings",
+                     "assumptions", "unknowns"],
         "properties": {
             "summary": {"type": "string"},
             "code": {"type": "string"},
             "language": {"type": "string"},
+            "components": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["name", "purpose"],
+                    "properties": {
+                        "name": {"type": "string"},
+                        "purpose": {"type": "string"},
+                    },
+                },
+            },
             "findings": {
                 "type": "array",
                 "items": {
@@ -312,6 +447,36 @@ def _validate(data, action, language):
     if action in CODE_ACTIONS and not code.strip():
         problems.append(f"action {action!r} must return code, and returned none")
 
+    components = data.get("components")
+    if not isinstance(components, list):
+        problems.append("components must be a list")
+        components = []
+    for entry in components:
+        if not isinstance(entry, dict):
+            problems.append(f"component is not an object: {entry!r}")
+            continue
+        if not (entry.get("name") or "").strip():
+            problems.append("component has no name")
+        if not (entry.get("purpose") or "").strip():
+            problems.append("component has no purpose")
+
+    if action in DESIGN_ACTIONS:
+        # Content rule, not a schema rule: a risk nobody can locate is not
+        # actionable, and this survives the schema relaxation deliberately.
+        unbound = [f for f in (data.get("findings") or [])
+                   if isinstance(f, dict)
+                   and not str(f.get("location") or "").strip()]
+        if unbound:
+            problems.append(
+                f"{len(unbound)} risk(s) name no component; each risk must be "
+                "bound to something in the breakdown")
+        if not components:
+            problems.append(
+                f"action {action!r} must return a component breakdown, and returned none")
+        if code.strip():
+            problems.append(
+                f"action {action!r} must not return code; nothing is being built yet")
+
     findings = data.get("findings")
     if not isinstance(findings, list):
         problems.append("findings must be a list")
@@ -320,7 +485,10 @@ def _validate(data, action, language):
         if not isinstance(entry, dict):
             problems.append(f"finding is not an object: {entry!r}")
             continue
-        if (entry.get("severity") or "").strip().lower() not in SEVERITIES:
+        severity = (entry.get("severity") or "").strip().lower()
+        # "unspecified" is what _normalise_feasibility records: the flat schema
+        # drops the enum, so a feasibility risk carries no severity to validate.
+        if severity not in SEVERITIES and severity != "unspecified":
             problems.append(f"finding has invalid severity: {entry.get('severity')!r}")
         if not (entry.get("detail") or "").strip():
             problems.append("finding has no detail")
@@ -364,9 +532,23 @@ def run_action(data):
                      f"\"\"\"\n{code_in}\n\"\"\"")
     user_prompt = "\n\n".join(parts)
 
-    result = _llm.complete_json(SYSTEM_PROMPT, user_prompt, schema=_reply_schema(),
-                                max_tokens=4000, temperature=0.2)
+    if action in DESIGN_ACTIONS:
+        # Same hard constraints, different reply contract and a flat schema.
+        system = SYSTEM_PROMPT.split("Return ONLY a JSON object")[0] + FEASIBILITY_CONTRACT
+        schema = _feasibility_schema()
+    else:
+        system, schema = SYSTEM_PROMPT, _reply_schema()
+
+    result = _llm.complete_json(
+        system, user_prompt, schema=schema, max_tokens=4000, temperature=0.2,
+        # Feasibility output is a variable-length sketch; constrained decoding
+        # rejected it on every attempt. json_object still guarantees parseable
+        # JSON, and _validate still enforces every content rule.
+        strict_schema=action not in DESIGN_ACTIONS)
     reply = result["data"]
+    if action in DESIGN_ACTIONS:
+        reply = _normalise_feasibility(reply)
+        result["data"] = reply
 
     problems, code = _validate(reply, action, language)
     if problems:
@@ -446,6 +628,8 @@ def main():
             "summary": reply["summary"].strip(),
             "code": code,
             "language": (reply.get("language") or language).lower(),
+            "components": reply.get("components") or [],
+            "dropped_unbound_risks": reply.get("dropped_unbound_risks", 0),
             "findings": reply.get("findings") or [],
             "assumptions": reply.get("assumptions") or [],
             "unknowns": reply.get("unknowns") or [],

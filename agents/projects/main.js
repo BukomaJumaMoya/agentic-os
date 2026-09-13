@@ -270,14 +270,23 @@ async function main() {
         // happened rather than implying the server did it.
         const res = expectOk(await request(`/team/${pathSegment(TEAM_ID, 'teamId')}/task`));
         const all = (res.body && res.body.tasks) || [];
-        const needle = String(payload.query).toLowerCase();
+        // Match on TERMS, not on the whole phrase. A caller passing a domain
+        // like "multichannel client communication automation" as one substring
+        // can never match a task name, so the search silently returned zero
+        // every time. Requiring two distinct terms keeps a single common word
+        // ("client") from matching the entire backlog in the other direction.
+        const terms = Array.from(new Set(
+          String(payload.query).toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 3)));
+        const needed = Math.min(terms.length, 2) || 1;
         const matched = all.filter((t) => {
           const hay = `${(t && t.name) || ''} ${(t && t.text_content) || ''}`.toLowerCase();
-          return hay.includes(needle);
+          const hits = terms.filter((w) => hay.includes(w)).length;
+          return terms.length ? hits >= needed : false;
         });
         result = {
           tasks: matched.slice(0, 20),
-          filter: 'client-side substring match on name and text_content',
+          filter: `client-side term match on name and text_content (>=${needed} of ${terms.length} terms)`,
+          terms,
           scanned: all.length,
           matched: matched.length,
           // ClickUp pages this endpoint. Anything beyond the first page was
