@@ -52,6 +52,14 @@ def _request_path(request_id: str) -> Path:
     return _approval.request_path(request_id)
 
 
+def _approval_state(request_id):
+    """Live approval state for a request, from the one module that owns it."""
+    try:
+        return _approval.decision_state(request_id)
+    except Exception as e:
+        return {"state": "invalid", "detail": str(e)}
+
+
 def _summarize(rec, status, decision=None):
     """One approval request, reduced to what a chat reply should carry.
 
@@ -66,12 +74,29 @@ def _summarize(rec, status, decision=None):
     for. Anything not named here is deliberately withheld.
     """
     proposal = rec.get("proposal") or {}
+    request_id = rec.get("request_id")
+    state = _approval_state(request_id)
     summary = {
-        "request_id": rec.get("request_id"),
+        "request_id": request_id,
         "status": status,
+        # The live state, which is not the same thing as "a decision exists".
+        # An approval that has expired or been used still has a decision file;
+        # reporting it as simply "approved" is how a stale approval looks
+        # actionable.
+        "approval_state": state.get("state"),
         "timestamp": rec.get("timestamp"),
         "subject": proposal.get("subject"),
     }
+    if state.get("state") == "approved":
+        summary["expires_at"] = state.get("expires_at")
+        summary["seconds_remaining"] = state.get("seconds_remaining")
+    elif state.get("state") == "expired":
+        summary["expired_at"] = state.get("expires_at")
+        summary["expired_for_seconds"] = state.get("expired_for_seconds")
+        summary["actionable"] = False
+    elif state.get("state") == "consumed":
+        summary["consumed_at"] = state.get("consumed_at")
+        summary["actionable"] = False
     if decision:
         summary["decision"] = {
             "approved": decision.get("approved"),
@@ -94,8 +119,14 @@ def _list_pending():
         rid = rec.get("request_id")
         if not rid:
             continue
-        if not _decision_path(rid).exists():
-            pending.append(_summarize(rec, "pending"))
+        state = _approval_state(rid)
+        if state.get("state") in ("pending", "expired", "consumed"):
+            # Expired and consumed requests still appear, labelled. Hiding them
+            # would make a request that can no longer be acted on look like it
+            # was never made.
+            label = {"pending": "pending", "expired": "expired",
+                     "consumed": "already_used"}[state["state"]]
+            pending.append(_summarize(rec, label))
             continue
         try:
             decision = json.loads(_decision_path(rid).read_text())
@@ -160,12 +191,15 @@ def handle_telegram_command(user_id: str, text: str) -> dict:
         if not req_path.exists():
             return {"ok": False, "error": "request_not_found", "request_id": request_id}
         rec = json.loads(req_path.read_text())
-        if not dec_path.exists():
-            # Summary only -- see _summarize. The proposal body is reached by
-            # acting on the request, not by querying it.
-            return {"ok": True, **_summarize(rec, "pending")}
-        decision = json.loads(dec_path.read_text())
-        status = "approved" if decision.get("approved") else "rejected"
+        # Summary only -- see _summarize. The proposal body is reached by acting
+        # on the request, not by querying it.
+        state = _approval_state(request_id)
+        decision = state.get("decision")
+        # "expired" and "already used" are distinct outcomes and are reported
+        # as such, rather than collapsing into "approved" or "pending".
+        status = {"approved": "approved", "rejected": "rejected",
+                  "expired": "expired", "consumed": "already_used",
+                  "invalid": "invalid"}.get(state.get("state"), "pending")
         return {"ok": True, **_summarize(rec, status, decision)}
 
     if command == "LIST":

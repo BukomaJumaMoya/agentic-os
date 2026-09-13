@@ -14,7 +14,7 @@ import os
 import time
 import uuid
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 BASE = Path(__file__).resolve().parent.parent
 # Single knob for relocating runtime state out of the repo tree. Defaults to
@@ -132,6 +132,61 @@ def classify(action: str) -> str:
     return AUTHORITY_MAP.get(a, "EXTERNAL_ACTION")
 
 
+# Audit F-5. An approval used to be permanent and reusable: once a decision file
+# said approved, it authorised an action today, tomorrow, and every time anyone
+# asked again. Two separate holes -- no expiry, and no consumption.
+#
+# A human approving "send this proposal" is approving it NOW, on the information
+# in front of them. Fifteen minutes later that intent is stale; a day later it is
+# not consent to anything. And consent given once is consent for one action, not
+# a standing authorisation.
+DEFAULT_DECISION_TTL_SECONDS = 900        # 15 minutes
+DEFAULT_REQUEST_TTL_SECONDS = 24 * 3600   # a request nobody answered in a day
+
+
+def _now():
+    """Current UTC time.
+
+    A function, not a direct call, so tests can advance the clock instead of
+    sleeping. Expiry tested with real sleeps is a test that is either slow or
+    lying about what it covers.
+    """
+    return datetime.now(timezone.utc)
+
+
+def _ttl(env_var: str, config_key: str, default: int) -> int:
+    raw = _config_value(env_var, "approval", config_key)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+def decision_ttl_seconds() -> int:
+    return _ttl("APPROVAL_DECISION_TTL_SECONDS", "decision_ttl_seconds",
+                DEFAULT_DECISION_TTL_SECONDS)
+
+
+def request_ttl_seconds() -> int:
+    return _ttl("APPROVAL_REQUEST_TTL_SECONDS", "request_ttl_seconds",
+                DEFAULT_REQUEST_TTL_SECONDS)
+
+
+def _parse_time(value):
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    # A naive timestamp from an older record is treated as UTC rather than
+    # crashing the comparison.
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _consumed_path(request_id: str) -> Path:
+    return APPROVAL_DIR / f"{request_id}.consumed.json"
+
+
 def _request_path(request_id: str) -> Path:
     return APPROVAL_DIR / f"{request_id}.request.json"
 
@@ -150,6 +205,10 @@ def decision_path(request_id: str) -> Path:
     return _decision_path(request_id)
 
 
+def consumed_path(request_id: str) -> Path:
+    return _consumed_path(request_id)
+
+
 def request_approval(proposal: dict, enquiry: str | None = None) -> dict:
     """Create an approval request and return the request record.
 
@@ -165,12 +224,18 @@ def request_approval(proposal: dict, enquiry: str | None = None) -> dict:
         or proposal.get("proposal_id")
         or str(uuid.uuid4())
     )
+    created_at = _now()
     record = {
         "request_id": request_id,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": created_at.isoformat(),
         "proposal": proposal,
         "status": "pending",
-        "expires_at": datetime.now(timezone.utc).isoformat(),  # simplified
+        # Was `datetime.now()` with a "# simplified" comment -- a field that
+        # said every request expired the instant it was created, and which
+        # nothing checked. Now it means what it says and record_decision
+        # enforces it.
+        "expires_at": (created_at + timedelta(seconds=request_ttl_seconds())).isoformat(),
+        "request_ttl_seconds": request_ttl_seconds(),
     }
     if enquiry is not None:
         record["enquiry"] = enquiry
@@ -214,12 +279,40 @@ def record_decision(request_id: str, approved: bool, approver: str = None, reaso
             return existing
         except Exception:
             pass
+    decided_at = _now()
+
+    # Approving a request that went stale days ago is not consent to act on it.
+    # A rejection is always allowed: refusing something old is still meaningful.
+    if approved:
+        request_file = _request_path(request_id)
+        if request_file.exists():
+            try:
+                record = json.loads(request_file.read_text())
+            except Exception:
+                record = {}
+            request_expiry = _parse_time(record.get("expires_at"))
+            if request_expiry and decided_at > request_expiry:
+                return {
+                    "request_id": request_id,
+                    "approved": False,
+                    "approver": approver or "human",
+                    "timestamp": decided_at.isoformat(),
+                    "reason": "request_expired",
+                    "recorded": False,
+                    "request_expired_at": record.get("expires_at"),
+                }
+
+    ttl = decision_ttl_seconds()
     decision = {
         "request_id": request_id,
         "approved": approved,
         "approver": approver or "human",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": decided_at.isoformat(),
         "reason": reason or ("approved" if approved else "rejected"),
+        # Only an approval carries a deadline. A rejection does not go stale
+        # into permission.
+        "expires_at": (decided_at + timedelta(seconds=ttl)).isoformat() if approved else None,
+        "ttl_seconds": ttl if approved else None,
     }
     if channel:
         decision["channel"] = channel
@@ -228,15 +321,94 @@ def record_decision(request_id: str, approved: bool, approver: str = None, reaso
     return decision
 
 
-def is_approved(request_id: str) -> bool:
+def decision_state(request_id: str) -> dict:
+    """Resolve what a request's approval actually permits, right now.
+
+    One place decides what "approved" means, so is_approved, resume_if_approved
+    and the Telegram commands can never disagree.
+
+    state is one of:
+      pending   no decision recorded yet
+      approved  approved, unexpired, unused -- the only state that permits action
+      rejected  explicitly refused; permanent
+      expired   approved, but the approval has aged out
+      consumed  approved and already used for an action
+      invalid   the decision file exists but could not be read
+    """
+    consumed = _consumed_path(request_id)
+    if consumed.exists():
+        record = {}
+        try:
+            record = json.loads(consumed.read_text())
+        except Exception:
+            pass
+        return {"state": "consumed", "decision": record,
+                "consumed_at": record.get("consumed_at")}
+
     decision_file = _decision_path(request_id)
     if not decision_file.exists():
-        return False
+        return {"state": "pending", "decision": None}
     try:
         decision = json.loads(decision_file.read_text())
-        return decision.get("approved") is True
+    except Exception as e:
+        return {"state": "invalid", "decision": None, "detail": str(e)}
+
+    if decision.get("approved") is not True:
+        return {"state": "rejected", "decision": decision}
+
+    expires_at = _parse_time(decision.get("expires_at"))
+    if expires_at is None:
+        # A decision written before TTLs existed. Age it from its own timestamp
+        # rather than treating a missing deadline as "never expires", which is
+        # the behaviour this change exists to remove.
+        decided = _parse_time(decision.get("timestamp"))
+        if decided is not None:
+            expires_at = decided + timedelta(seconds=decision_ttl_seconds())
+
+    now = _now()
+    if expires_at is not None and now > expires_at:
+        return {"state": "expired", "decision": decision,
+                "expires_at": expires_at.isoformat(),
+                "expired_for_seconds": int((now - expires_at).total_seconds())}
+
+    remaining = int((expires_at - now).total_seconds()) if expires_at else None
+    return {"state": "approved", "decision": decision,
+            "expires_at": expires_at.isoformat() if expires_at else None,
+            "seconds_remaining": remaining}
+
+
+def consume_decision(request_id: str) -> dict:
+    """Mark an approval used, so it cannot authorise a second action.
+
+    The rename is atomic: os.replace either moves the decision file or raises.
+    Two processes racing to consume the same approval cannot both succeed --
+    the loser finds no source file and is told it was already used.
+    """
+    source = _decision_path(request_id)
+    target = _consumed_path(request_id)
+    if not source.exists():
+        state = decision_state(request_id)
+        return {"consumed": False,
+                "reason": "already_consumed" if state["state"] == "consumed" else "no_decision",
+                "state": state["state"]}
+    try:
+        record = json.loads(source.read_text())
     except Exception:
-        return False
+        record = {"request_id": request_id}
+    record["consumed_at"] = _now().isoformat()
+    try:
+        source.write_text(json.dumps(record, indent=2))
+        os.replace(source, target)
+    except FileNotFoundError:
+        return {"consumed": False, "reason": "already_consumed", "state": "consumed"}
+    except Exception as e:
+        return {"consumed": False, "reason": f"consume_failed: {e}", "state": "unknown"}
+    return {"consumed": True, "consumed_at": record["consumed_at"], "state": "consumed"}
+
+
+def is_approved(request_id: str) -> bool:
+    """True only when an approval is valid, unexpired and unused."""
+    return decision_state(request_id)["state"] == "approved"
 
 
 def enforce(step: dict, task_context: dict = None) -> dict:
@@ -288,16 +460,34 @@ def resume_if_approved(request_id: str) -> dict:
     """
     if not request_id:
         return {"approved": False, "reason": "missing_request_id"}
-    decision_file = _decision_path(request_id)
-    if not decision_file.exists():
-        return {"approved": False, "reason": "pending"}
-    try:
-        decision = json.loads(decision_file.read_text())
-        if decision.get("approved") is True:
-            return {"approved": True, "executed": True, "decision": decision}
-        return {"approved": False, "reason": decision.get("reason", "rejected"), "decision": decision}
-    except Exception as e:
-        return {"approved": False, "reason": f"invalid_decision: {e}"}
+
+    state = decision_state(request_id)
+    decision = state.get("decision")
+
+    if state["state"] == "approved":
+        return {"approved": True, "executed": True, "reason": "approved",
+                "decision": decision, "state": "approved",
+                "expires_at": state.get("expires_at"),
+                "seconds_remaining": state.get("seconds_remaining")}
+
+    # Every refusal keeps its own reason. "expired" and "already used" are not
+    # the same as "pending" and not the same as "rejected", and a caller that
+    # cannot tell them apart cannot tell the operator what to do next.
+    out = {"approved": False, "state": state["state"], "decision": decision}
+    if state["state"] == "expired":
+        out["reason"] = "expired"
+        out["expires_at"] = state.get("expires_at")
+        out["expired_for_seconds"] = state.get("expired_for_seconds")
+    elif state["state"] == "consumed":
+        out["reason"] = "already_used"
+        out["consumed_at"] = state.get("consumed_at")
+    elif state["state"] == "rejected":
+        out["reason"] = (decision or {}).get("reason") or "rejected"
+    elif state["state"] == "invalid":
+        out["reason"] = f"invalid_decision: {state.get('detail')}"
+    else:
+        out["reason"] = "pending"
+    return out
 
 
 def cleanup(request_id: str):
@@ -310,6 +500,7 @@ def cleanup(request_id: str):
     for p in [
         _request_path(request_id),
         _decision_path(request_id),
+        _consumed_path(request_id),
         EVIDENCE_DIR / f"{request_id}-proposal.json",
     ]:
         if p.exists():

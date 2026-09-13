@@ -242,6 +242,24 @@ def execute_external_action(external_action: dict, proposal: dict = None) -> dic
     verification["executed"] = executed
     verification["completed_at"] = datetime.now(timezone.utc).isoformat()
 
+    # Single use. An approval authorises ONE action; consuming it means a
+    # replay, a retry, or a second caller holding the same request id cannot
+    # act on the same consent twice.
+    #
+    # Consumed after success, not before, so a transport failure does not burn
+    # an approval the operator would have to grant again. The residual window is
+    # the gap between the action landing and the rename: two callers executing
+    # concurrently could both succeed before either consumes. Nothing in this
+    # system executes concurrently today -- external actions run one at a time
+    # from the approval path -- and burning an approval on a failed send was
+    # judged the worse trade.
+    if executed:
+        consumption = _approval.consume_decision(request_id)
+    else:
+        consumption = {"consumed": False, "reason": "not_executed"}
+    verification["approval_consumed"] = consumption.get("consumed", False)
+    verification["approval_consumption"] = consumption
+
     audit_write_error = None
     try:
         decision["execution"] = verification
