@@ -78,6 +78,16 @@ jobs:
             echo 'pwsh not available; skipping PowerShell syntax check on this runner'
           fi
 
+      - name: Install Python dependencies
+        run: |
+          set -euo pipefail
+          # The repository had none until proposals gained PDF rendering.
+          # Only orchestrator/proposal_pdf.py needs these, and it imports them
+          # lazily, so everything else still runs without them -- but the PDF
+          # suite does not, so CI installs them.
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
       - name: Approval boundary tests
         run: |
           set -euo pipefail
@@ -105,6 +115,15 @@ jobs:
         run: |
           set -euo pipefail
           PYTHONPATH=. python tests/test_step7_flagship_integration.py
+
+      - name: Agent and document tests
+        run: |
+          set -euo pipefail
+          PYTHONPATH=. python tests/test_p0_1_workspace_confinement.py
+          PYTHONPATH=. python tests/test_research_agent.py
+          PYTHONPATH=. python tests/test_coding_agent.py
+          PYTHONPATH=. python tests/test_proposal_pdf.py
+          node tests/test_projects_agent.js
 
       - name: Documentation consistency check
         run: |

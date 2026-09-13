@@ -9,6 +9,9 @@ It requires OpenClaw to be running and reachable at OPENCLAW_GATEWAY_URL.
 """
 
 import json
+import os
+import mimetypes
+import uuid
 import sys
 import urllib.request
 import urllib.error
@@ -381,6 +384,158 @@ def send_approval_prompt(request_id: str, proposal: dict) -> dict:
         }
     if state_write_error:
         out["state_write_error"] = state_write_error
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Document delivery.
+#
+# conversations_send CANNOT carry a file. Verified directly against the live
+# gateway: three field shapes (attachments[{path,fileName}],
+# attachments[{type,path}], media[{path}]) all returned status "sent" and
+# delivered text only. The endpoint accepts unknown fields without complaint and
+# silently drops them, so a "sent" there says nothing about an attachment. The
+# gateway's own `attach` tool is agent-side and stays "Tool not available" at
+# /tools/invoke even after being allowlisted.
+#
+# Documents therefore go straight to Telegram's Bot API sendDocument, which is
+# confirmed working: it echoed back file_name, mime_type and a byte-exact
+# file_size. That bypasses the gateway, so it gets its OWN status vocabulary
+# rather than borrowing "sent/queued/suppressed/unknown" -- a different
+# transport with different failure modes must not be described in words that
+# imply the same guarantees.
+# ---------------------------------------------------------------------------
+
+CRLF = chr(13) + chr(10)
+DOCUMENT_API = "https://api.telegram.org/bot{token}/sendDocument"
+MAX_DOCUMENT_BYTES = 50 * 1024 * 1024  # Telegram's own ceiling for bots.
+
+
+def _bot_token() -> str:
+    """Environment first; the OpenClaw config only as a fallback.
+
+    Every other secret in this stack is read from the environment. Reading this
+    one primarily from OpenClaw's config file would make it the single
+    credential that behaves differently, and would couple proposal delivery to
+    another tool's file layout. The fallback exists because that is where the
+    token currently lives, not because it is the right source.
+    """
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    if token and token.strip():
+        return token.strip()
+    try:
+        config_path = Path(os.getenv("OPENCLAW_CONFIG")
+                           or Path.home() / ".openclaw" / "openclaw.json")
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+        token = ((data.get("channels") or {}).get("telegram") or {}).get("botToken")
+    except Exception as e:
+        raise ConfigError(
+            "TELEGRAM_BOT_TOKEN is not set and the OpenClaw config could not be "
+            "read for a fallback: " + str(e))
+    if not token or not str(token).strip():
+        raise ConfigError(
+            "TELEGRAM_BOT_TOKEN is not set and no channels.telegram.botToken "
+            "was found in the OpenClaw config.")
+    return str(token).strip()
+
+
+def _multipart(fields: dict, file_field: str, filename: str, payload: bytes,
+               content_type: str):
+    """Build a multipart/form-data body. stdlib only; no new dependency."""
+    boundary = uuid.uuid4().hex
+    parts = []
+    for key, value in fields.items():
+        head = (
+            "--" + boundary + CRLF
+            + "Content-Disposition: form-data; name=" + chr(34) + key + chr(34) + CRLF
+            + CRLF + str(value) + CRLF)
+        parts.append(head.encode("utf-8"))
+    head = (
+        "--" + boundary + CRLF
+        + "Content-Disposition: form-data; name=" + chr(34) + file_field + chr(34)
+        + "; filename=" + chr(34) + filename + chr(34) + CRLF
+        + "Content-Type: " + content_type + CRLF + CRLF)
+    parts.append(head.encode("utf-8") + payload + CRLF.encode("utf-8"))
+    parts.append(("--" + boundary + "--" + CRLF).encode("utf-8"))
+    return b"".join(parts), "multipart/form-data; boundary=" + boundary
+
+
+def send_document(user_id: str, path, caption: str = "") -> dict:
+    """Deliver a file to an allowlisted Telegram DM via the Bot API.
+
+    Returns {"delivered", "document_status", "reason", "file_name", "message_id"}.
+
+    document_status is its own vocabulary, deliberately not the gateway's:
+      delivered         Telegram confirmed the stored document object
+      not_attempted     a precondition failed; nothing left this machine
+      rejected          Telegram refused the request
+      transport_failed  the request did not complete
+    """
+    out = {"delivered": False, "document_status": "not_attempted",
+           "reason": None, "file_name": None, "message_id": None}
+
+    path = Path(path)
+    if not path.exists():
+        out["reason"] = "file not found: " + path.name
+        return out
+    payload = path.read_bytes()
+    if not payload:
+        out["reason"] = "file is empty"
+        return out
+    if len(payload) > MAX_DOCUMENT_BYTES:
+        out["reason"] = "file is %d bytes, above Telegram's limit" % len(payload)
+        return out
+    out["file_name"] = path.name
+
+    try:
+        token = _bot_token()
+    except ConfigError as e:
+        out["reason"] = str(e)
+        return out
+
+    body, content_type = _multipart(
+        {"chat_id": str(user_id), "caption": (caption or "")[:1024]},
+        "document", path.name, payload,
+        mimetypes.guess_type(path.name)[0] or "application/octet-stream")
+    req = urllib.request.Request(
+        DOCUMENT_API.format(token=token), data=body, method="POST",
+        headers={"Content-Type": content_type,
+                 "User-Agent": "juma-freelance-ai/1.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            parsed = json.loads(resp.read().decode("utf-8", errors="replace"))
+    except urllib.error.HTTPError as e:
+        detail = ""
+        try:
+            detail = e.read().decode("utf-8", errors="replace")[:200]
+        except Exception:
+            pass
+        # Never echo the request URL anywhere: it carries the bot token.
+        out["document_status"] = "rejected"
+        out["reason"] = "Telegram refused the document (HTTP %s): %s" % (e.code, detail)
+        return out
+    except Exception as e:
+        out["document_status"] = "transport_failed"
+        out["reason"] = type(e).__name__ + ": " + str(e)
+        return out
+
+    if not parsed.get("ok"):
+        out["document_status"] = "rejected"
+        out["reason"] = str(parsed.get("description"))[:200]
+        return out
+
+    result = parsed.get("result") or {}
+    document = result.get("document") or {}
+    out.update({
+        "delivered": True,
+        "document_status": "delivered",
+        "message_id": result.get("message_id"),
+        # Telegram's own echo of what it stored. This is the only real proof
+        # that a document -- not a link, not text -- was delivered.
+        "file_name": document.get("file_name") or path.name,
+        "mime_type": document.get("mime_type"),
+        "file_size": document.get("file_size"),
+    })
     return out
 
 

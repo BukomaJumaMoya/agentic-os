@@ -1,0 +1,17 @@
+# Python dependencies.
+#
+# This file exists because of one feature: rendering proposals as PDF documents.
+# Before it, the Python side had NO dependencies at all -- stdlib only -- which
+# the audit called out as genuinely good, because it removes an entire class of
+# supply-chain risk. That property is now spent, and it is worth knowing what it
+# bought and what it cost.
+#
+# fpdf2 pulls in three transitive dependencies of its own: defusedxml, fonttools
+# and Pillow. Pillow is a compiled C extension, so this is not a pure-Python
+# addition and CI needs working wheels for the runner's platform.
+#
+# Everything else in this repository still runs without these installed. Only
+# orchestrator/proposal_pdf.py imports fpdf2, and it is imported lazily, so a
+# machine without it produces a proposal with no PDF attached rather than no
+# proposal.
+fpdf2==2.8.8
