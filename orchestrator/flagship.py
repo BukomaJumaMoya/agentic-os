@@ -35,7 +35,9 @@ def load_config():
     if not CONFIG_PATH.exists():
         return {}
     try:
-        return json.loads(CONFIG_PATH.read_text())
+        # See the note in approval.load_config -- the file is UTF-8 and
+        # read_text() would otherwise decode it as cp1252.
+        return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
     except Exception:
         return {}
 

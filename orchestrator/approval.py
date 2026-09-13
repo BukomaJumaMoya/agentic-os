@@ -33,7 +33,10 @@ def load_config() -> dict:
     if not CONFIG_PATH.exists():
         return {}
     try:
-        return json.loads(CONFIG_PATH.read_text())
+        # Explicit: the file is UTF-8, but read_text() defaults to the locale
+        # encoding (cp1252 on Windows), which mojibakes the en dash in
+        # default_rate into every config_used block and evidence record.
+        return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
     except Exception:
         return {}
 
