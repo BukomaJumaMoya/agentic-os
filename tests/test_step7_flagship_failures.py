@@ -19,6 +19,7 @@ sys.path.insert(0, str(BASE))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import _state_isolation  # noqa: E402,F401 -- MUST precede orchestrator imports
+import _llm_stub  # noqa: E402,F401 -- offline model boundary; MUST follow the above
 
 EVIDENCE_DIR = _state_isolation.EVIDENCE_DIR
 APPROVAL_DIR = _state_isolation.APPROVAL_DIR
@@ -121,7 +122,32 @@ def test_partial_completion_preserves_errors():
 
 
 def test_no_secrets_in_any_output():
+    """No secret VALUE may reach the workflow output.
+
+    The previous version asserted that the strings "GEMINI_API_KEY" and
+    "CLICKUP_TOKEN" were absent. Those are variable names, not secrets, so it
+    tripped on the projects agent's legitimate "Missing CLICKUP_TOKEN
+    environment variable" message and failed on every machine without a ClickUp
+    token -- which is to say always, in CI. It also could not have caught a real
+    leak, because a leaked token does not contain the name of its own variable.
+
+    This version plants canaries shaped like each provider's issued keys, runs
+    the pipeline, and asserts none of the values come back. That covers the path
+    the audit actually identified: child-process error text propagating into
+    workflow output, and from there into evidence files and the model's context.
+    """
     setup()
+    canaries = {
+        "GROQ_API_KEY": "gsk_" + "CANARYgroq" * 5,
+        "OPENROUTER_API_KEY": "sk-or-v1-" + "CANARYopenrouter" * 4,
+        "GEMINI_API_KEY": "AIza" + "CANARYgemini" * 3,
+        "TAVILY_API_KEY": "tvly-" + "CANARYtavily" * 3,
+        "CLICKUP_TOKEN": "pk_999999999_" + "CANARYclickup" * 2,
+    }
+    saved = {k: os.environ.get(k) for k in canaries}
+    for k, v in canaries.items():
+        os.environ[k] = v
+
     enquiries = [
         "Need a web app.",
         "Research competitor pricing.",
@@ -129,14 +155,30 @@ def test_no_secrets_in_any_output():
         "Create ClickUp task.",
         "Send proposal to client now.",
     ]
-    for e in enquiries:
-        result = run_workflow(e, approval_mode=True)
-        text = json.dumps(result)
-        assert "GEMINI_API_KEY" not in text
-        assert "CLICKUP_TOKEN" not in text
-        assert "password" not in text.lower()
-        if result.get("approval_request"):
-            cleanup(result["approval_request"]["request_id"])
+    try:
+        for e in enquiries:
+            result = run_workflow(e, approval_mode=True)
+            text = json.dumps(result)
+            for name, value in canaries.items():
+                assert value not in text, f"{name} value leaked into workflow output"
+            # A credential must not survive into the evidence file either.
+            request = result.get("approval_request")
+            if request:
+                rid = request["request_id"]
+                for path in (EVIDENCE_DIR / f"{rid}-proposal.json",
+                             APPROVAL_DIR / f"{rid}.request.json"):
+                    if path.exists():
+                        on_disk = path.read_text(encoding="utf-8")
+                        for name, value in canaries.items():
+                            assert value not in on_disk, f"{name} value written to {path.name}"
+                cleanup(rid)
+            assert "password" not in text.lower()
+    finally:
+        for k, old in saved.items():
+            if old is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = old
     teardown()
     print("PASS: no_secrets_in_any_output")
 

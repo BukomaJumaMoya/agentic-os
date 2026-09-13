@@ -14,6 +14,7 @@ sys.path.insert(0, str(BASE))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import _state_isolation  # noqa: E402,F401 -- MUST precede orchestrator imports
+import _llm_stub  # noqa: E402,F401 -- offline model boundary; MUST follow the above
 
 EVIDENCE_DIR = _state_isolation.EVIDENCE_DIR
 APPROVAL_DIR = _state_isolation.APPROVAL_DIR

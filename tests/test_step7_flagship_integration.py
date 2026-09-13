@@ -18,9 +18,19 @@ except Exception:
 
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-EVIDENCE_DIR = BASE / "evidence"
-APPROVAL_DIR = BASE / ".approval"
+# Audit F-23: this suite pointed EVIDENCE_DIR and APPROVAL_DIR at the real
+# repository directories and rmtree'd them in setup() and teardown(), so
+# running it destroyed live approval requests and proposal evidence. The
+# other suites were isolated; this one was missed. Both imports MUST stay
+# ahead of the orchestrator imports below -- the state constants are frozen
+# at first import of those modules.
+import _state_isolation  # noqa: E402,F401
+import _llm_stub  # noqa: E402,F401 -- offline model boundary
+
+EVIDENCE_DIR = _state_isolation.EVIDENCE_DIR
+APPROVAL_DIR = _state_isolation.APPROVAL_DIR
 
 from orchestrator.flagship import run_workflow, request_approval, classify_enquiry  # noqa: E402
 from orchestrator.approval import record_decision, resume_if_approved, cleanup, is_approved  # noqa: E402
@@ -57,6 +67,23 @@ def _mock_invoke(agent_name, payload, retries=2):
     return output, None
 
 
+# Telegram delivery, mocked at the boundary flagship actually calls.
+#
+# These tests previously patched telegram_approval._post. That stopped being the
+# right seam: send_approval_prompt resolves the approval allowlist BEFORE any
+# HTTP call, so without a configured recipient it returns
+# delivery_status "not_attempted" and never reaches _post at all. The mock was
+# therefore inert, every prompt read as undelivered, and each
+# `status == "awaiting_approval"` assertion failed for a reason unrelated to
+# what it tests. Patching send_approval_prompt keeps delivery deterministic and
+# offline, which is what this suite's docstring promises.
+_DELIVERED = {
+    "sent": True,
+    "channel": "telegram",
+    "delivery_status": "sent",
+}
+
+
 def setup():
     for d in [EVIDENCE_DIR, APPROVAL_DIR]:
         if d.exists():
@@ -74,7 +101,7 @@ def test_normal_client_enquiry():
     setup()
     enquiry = "Hi, I need a web app for my small business. Budget around $10k, timeline 2 months."
     with patch("orchestrator.orchestrator.invoke", side_effect=_mock_invoke):
-        with patch("orchestrator.telegram_approval._post", return_value={"ok": True, "status": 200}):
+        with patch("orchestrator.telegram_approval.send_approval_prompt", return_value=_DELIVERED):
             result = run_workflow(enquiry, approval_mode=True)
     assert result["workflow"] == "flagship"
     assert result["status"] == "awaiting_approval"
@@ -90,7 +117,7 @@ def test_enquiry_with_missing_information():
     setup()
     enquiry = "We need an AI chatbot."
     with patch("orchestrator.orchestrator.invoke", side_effect=_mock_invoke):
-        with patch("orchestrator.telegram_approval._post", return_value={"ok": True, "status": 200}):
+        with patch("orchestrator.telegram_approval.send_approval_prompt", return_value=_DELIVERED):
             result = run_workflow(enquiry, approval_mode=True)
     classification = result["classification"]
     assert "missing_information" in classification
@@ -103,7 +130,7 @@ def test_research_required_enquiry():
     setup()
     enquiry = "Research competitor pricing for SaaS CRMs and compare with our offering."
     with patch("orchestrator.orchestrator.invoke", side_effect=_mock_invoke):
-        with patch("orchestrator.telegram_approval._post", return_value={"ok": True, "status": 200}):
+        with patch("orchestrator.telegram_approval.send_approval_prompt", return_value=_DELIVERED):
             result = run_workflow(enquiry, approval_mode=True)
     assert "research" in result["agents_invoked"]
     teardown()
@@ -114,7 +141,7 @@ def test_technical_coding_required_enquiry():
     setup()
     enquiry = "We need a Python API integration with ClickUp and Telegram bots. Please debug our existing code."
     with patch("orchestrator.orchestrator.invoke", side_effect=_mock_invoke):
-        with patch("orchestrator.telegram_approval._post", return_value={"ok": True, "status": 200}):
+        with patch("orchestrator.telegram_approval.send_approval_prompt", return_value=_DELIVERED):
             result = run_workflow(enquiry, approval_mode=True)
     assert "coding" in result["agents_invoked"]
     teardown()
@@ -125,7 +152,7 @@ def test_clickup_project_update_required():
     setup()
     enquiry = "Create a ClickUp task for onboarding and update project status to in progress."
     with patch("orchestrator.orchestrator.invoke", side_effect=_mock_invoke):
-        with patch("orchestrator.telegram_approval._post", return_value={"ok": True, "status": 200}):
+        with patch("orchestrator.telegram_approval.send_approval_prompt", return_value=_DELIVERED):
             result = run_workflow(enquiry, approval_mode=True)
     assert "projects" in result["agents_invoked"]
     teardown()
@@ -136,7 +163,7 @@ def test_approval_rejection():
     setup()
     enquiry = "Need a mobile app, budget $20k, timeline 3 months."
     with patch("orchestrator.orchestrator.invoke", side_effect=_mock_invoke):
-        with patch("orchestrator.telegram_approval._post", return_value={"ok": True, "status": 200}):
+        with patch("orchestrator.telegram_approval.send_approval_prompt", return_value=_DELIVERED):
             result = run_workflow(enquiry, approval_mode=True)
     assert result["status"] == "awaiting_approval"
     request_id = result["approval_request"]["request_id"]
@@ -153,7 +180,7 @@ def test_approved_proposal():
     setup()
     enquiry = "We need a landing page, budget $5k, timeline 3 weeks."
     with patch("orchestrator.orchestrator.invoke", side_effect=_mock_invoke):
-        with patch("orchestrator.telegram_approval._post", return_value={"ok": True, "status": 200}):
+        with patch("orchestrator.telegram_approval.send_approval_prompt", return_value=_DELIVERED):
             result = run_workflow(enquiry, approval_mode=True)
     assert result["status"] == "awaiting_approval"
     request_id = result["approval_request"]["request_id"]
@@ -170,7 +197,7 @@ def test_specialist_failure():
     setup()
     enquiry = ""
     with patch("orchestrator.orchestrator.invoke", side_effect=_mock_invoke):
-        with patch("orchestrator.telegram_approval._post", return_value={"ok": True, "status": 200}):
+        with patch("orchestrator.telegram_approval.send_approval_prompt", return_value=_DELIVERED):
             result = run_workflow(enquiry, approval_mode=True)
     assert result["status"] == "error"
     assert "error" in result
@@ -182,7 +209,7 @@ def test_external_action_failure_boundary():
     setup()
     enquiry = "Send proposal to client now."
     with patch("orchestrator.orchestrator.invoke", side_effect=_mock_invoke):
-        with patch("orchestrator.telegram_approval._post", return_value={"ok": True, "status": 200}):
+        with patch("orchestrator.telegram_approval.send_approval_prompt", return_value=_DELIVERED):
             result = run_workflow(enquiry, approval_mode=True)
     assert result["requires_approval"] is True
     assert any(a["type"] == "send_proposal" for a in result["external_actions"])
@@ -194,7 +221,7 @@ def test_external_action_success_but_verification_fails():
     setup()
     enquiry = "Send proposal to client now."
     with patch("orchestrator.orchestrator.invoke", side_effect=_mock_invoke):
-        with patch("orchestrator.telegram_approval._post", return_value={"ok": True, "status": 200}):
+        with patch("orchestrator.telegram_approval.send_approval_prompt", return_value=_DELIVERED):
             result = run_workflow(enquiry, approval_mode=True)
     assert result["requires_approval"] is True
     request_id = result["approval_request"]["request_id"]
@@ -210,7 +237,7 @@ def test_duplicate_request():
     setup()
     enquiry = "Need a website, budget $8k."
     with patch("orchestrator.orchestrator.invoke", side_effect=_mock_invoke):
-        with patch("orchestrator.telegram_approval._post", return_value={"ok": True, "status": 200}):
+        with patch("orchestrator.telegram_approval.send_approval_prompt", return_value=_DELIVERED):
             result1 = run_workflow(enquiry, approval_mode=True)
             result2 = run_workflow(enquiry + " duplicate", approval_mode=True)
     req1 = result1["approval_request"]["request_id"]
@@ -226,7 +253,7 @@ def test_retry_scenario():
     setup()
     enquiry = "Research competitor pricing for SaaS CRMs."
     with patch("orchestrator.orchestrator.invoke", side_effect=_mock_invoke):
-        with patch("orchestrator.telegram_approval._post", return_value={"ok": True, "status": 200}):
+        with patch("orchestrator.telegram_approval.send_approval_prompt", return_value=_DELIVERED):
             result = run_workflow(enquiry, approval_mode=True)
     assert "retry_log" in result["verification"]
     assert "specialist_errors" in result["verification"]
@@ -238,7 +265,7 @@ def test_partial_workflow_completion():
     setup()
     enquiry = "Research the ClickUp API and debug our Python integration code."
     with patch("orchestrator.orchestrator.invoke", side_effect=_mock_invoke):
-        with patch("orchestrator.telegram_approval._post", return_value={"ok": True, "status": 200}):
+        with patch("orchestrator.telegram_approval.send_approval_prompt", return_value=_DELIVERED):
             result = run_workflow(enquiry, approval_mode=True)
     assert "research" in result["agents_invoked"]
     assert "projects" in result["agents_invoked"]
@@ -252,7 +279,7 @@ def test_unexpected_tool_response():
     setup()
     enquiry = "Unknown task xyzzy"
     with patch("orchestrator.orchestrator.invoke", side_effect=_mock_invoke):
-        with patch("orchestrator.telegram_approval._post", return_value={"ok": True, "status": 200}):
+        with patch("orchestrator.telegram_approval.send_approval_prompt", return_value=_DELIVERED):
             result = run_workflow(enquiry, approval_mode=True)
     assert "verification" in result
     assert "specialist_errors" in result["verification"]
@@ -264,7 +291,7 @@ def test_verification_failure_boundary():
     setup()
     enquiry = "Need a proposal."
     with patch("orchestrator.orchestrator.invoke", side_effect=_mock_invoke):
-        with patch("orchestrator.telegram_approval._post", return_value={"ok": True, "status": 200}):
+        with patch("orchestrator.telegram_approval.send_approval_prompt", return_value=_DELIVERED):
             result = run_workflow(enquiry, approval_mode=True)
     assert "verification" in result
     verification = result["verification"]
@@ -278,7 +305,7 @@ def test_idempotent_approval_request():
     setup()
     enquiry = "Need a website, budget $8k."
     with patch("orchestrator.orchestrator.invoke", side_effect=_mock_invoke):
-        with patch("orchestrator.telegram_approval._post", return_value={"ok": True, "status": 200}):
+        with patch("orchestrator.telegram_approval.send_approval_prompt", return_value=_DELIVERED):
             result1 = run_workflow(enquiry, approval_mode=True)
     request_path = APPROVAL_DIR / f"{result1['approval_request']['request_id']}.request.json"
     evidence_path = EVIDENCE_DIR / f"{result1['approval_request']['request_id']}-proposal.json"
@@ -286,7 +313,7 @@ def test_idempotent_approval_request():
     first_evidence_mtime = evidence_path.stat().st_mtime if evidence_path.exists() else 0
 
     with patch("orchestrator.orchestrator.invoke", side_effect=_mock_invoke):
-        with patch("orchestrator.telegram_approval._post", return_value={"ok": True, "status": 200}):
+        with patch("orchestrator.telegram_approval.send_approval_prompt", return_value=_DELIVERED):
             run_workflow(enquiry, approval_mode=True)
     second_request_mtime = request_path.stat().st_mtime if request_path.exists() else 0
     second_evidence_mtime = evidence_path.stat().st_mtime if evidence_path.exists() else 0
@@ -301,7 +328,7 @@ def test_decision_not_overwritten_by_default():
     setup()
     enquiry = "Need a mobile app, budget $20k, timeline 3 months."
     with patch("orchestrator.orchestrator.invoke", side_effect=_mock_invoke):
-        with patch("orchestrator.telegram_approval._post", return_value={"ok": True, "status": 200}):
+        with patch("orchestrator.telegram_approval.send_approval_prompt", return_value=_DELIVERED):
             result = run_workflow(enquiry, approval_mode=True)
     request_id = result["approval_request"]["request_id"]
     record_decision(request_id, approved=True, approver="juma", reason="approved first")
@@ -320,7 +347,7 @@ def test_external_action_not_repeated_after_timeout():
     setup()
     enquiry = "Send proposal to client now."
     with patch("orchestrator.orchestrator.invoke", side_effect=_mock_invoke):
-        with patch("orchestrator.telegram_approval._post", return_value={"ok": True, "status": 200}):
+        with patch("orchestrator.telegram_approval.send_approval_prompt", return_value=_DELIVERED):
             result = run_workflow(enquiry, approval_mode=True)
     request_id = result["approval_request"]["request_id"]
     action = result["external_actions"][0]
