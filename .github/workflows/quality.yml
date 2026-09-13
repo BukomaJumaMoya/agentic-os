@@ -25,14 +25,35 @@ jobs:
       - name: Repository integrity
         run: |
           set -euo pipefail
-          # Ensure no tracked secrets by pattern in implementation/config files.
-          # Documentation may contain redacted references for audit; exclude docs.
-          if grep -RIn --exclude-dir=.git --exclude-dir=documentation --include='*.json' --include='*.md' --include='*.py' --include='*.js' --include='*.ps1' -E '(GEMINI_API_KEY|CLICKUP_TOKEN|TELEGRAM_BOT_TOKEN|GH_TOKEN|GITHUB_TOKEN|password\s*[:=]|api_key\s*[:=])|(sk-|ghp_|gho_|github_pat_)' .; then
-            echo '::error::Secret pattern detected in tracked files'
+          # Match credential VALUES by shape, never variable names.
+          #
+          # The previous check grepped for the strings GEMINI_API_KEY,
+          # CLICKUP_TOKEN, TELEGRAM_BOT_TOKEN and 'sk-'. Those are the names of
+          # environment variables, so every line that correctly reads a secret
+          # from the environment failed the scan -- including
+          # `const TOKEN = env.CLICKUP_TOKEN;`, a regex that DETECTS leaked
+          # keys, and a test asserting `"CLICKUP_TOKEN" not in combined`. It
+          # could not pass while the code did the right thing, and it never had
+          # (audit F-21: CI has never passed on any commit). It also taught
+          # nobody anything, because the only way to satisfy it was to stop
+          # naming the variables.
+          #
+          # These patterns match the issued-token shapes instead. Verified
+          # against synthetic keys for each provider: all flagged; and against
+          # env-var names, env reads, absence assertions and the detector regex
+          # in agents/coding/main.py: none flagged.
+          #
+          # git grep scans tracked files only, so an untracked node_modules
+          # cannot influence the result, and documentation/ is deliberately NOT
+          # excluded any more -- audit S-3 noted it is the directory most likely
+          # to receive a pasted token.
+          PATTERNS='gsk_[A-Za-z0-9]{40,}|sk-or-v1-[A-Za-z0-9]{40,}|sk-[A-Za-z0-9]{32,}|AIza[A-Za-z0-9_-]{30,}|tvly-[A-Za-z0-9]{24,}|pk_[0-9]{6,}_[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{30,}|gho_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{50,}|xox[baprs]-[A-Za-z0-9-]{20,}|[0-9]{8,10}:[A-Za-z0-9_-]{35}'
+          if git grep -InE "$PATTERNS" -- .; then
+            echo '::error::Credential-shaped value detected in tracked files'
             exit 1
           fi
           # Ensure sensitive files are not tracked
-          if git ls-files | grep -E '^\.env$|^config/juma\.secrets\.json$'; then
+          if git ls-files | grep -E '^\.env$|^\.env\.|^config/juma\.secrets\.json$|\.pem$|\.key$|providers\.key$'; then
             echo '::error::Sensitive file is tracked'
             exit 1
           fi
