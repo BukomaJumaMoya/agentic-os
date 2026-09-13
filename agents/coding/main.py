@@ -354,7 +354,6 @@ def _normalise_feasibility(data):
 
     names = [c["name"].lower() for c in components]
     risks = []
-    dropped = []
     for item in data.get("risks") or []:
         if not isinstance(item, str) or not item.strip():
             continue
@@ -369,20 +368,17 @@ def _normalise_feasibility(data):
                 if c["name"] and c["name"].lower() in text.lower():
                     location = c["name"]
                     break
-        if not location:
-            # The invariant is that no unbound risk reaches the proposal, and
-            # dropping one enforces it exactly as well as rejecting the whole
-            # reply -- without discarding five good components because the
-            # sixth risk was phrased loosely. The count is recorded rather than
-            # swallowed, so a model that routinely fails to bind is visible.
-            dropped.append(detail)
-            continue
+        # An unbound risk is kept, with an empty location, so _validate sees it
+        # and rejects the reply. Dropping it quietly would enforce the invariant
+        # in the output while hiding how often the model misses its contract --
+        # and feasibility is internal context, so a rejection costs one retry,
+        # not a bad document in front of a client.
         risks.append({"severity": "unspecified", "detail": detail, "location": location})
 
     out = dict(data)
     out["components"] = components
     out["findings"] = risks
-    out["dropped_unbound_risks"] = len(dropped)
+    out["unbound_risks"] = sum(1 for r in risks if not r["location"])
     out.setdefault("code", "")
     out.setdefault("language", "")
     return out
@@ -629,7 +625,7 @@ def main():
             "code": code,
             "language": (reply.get("language") or language).lower(),
             "components": reply.get("components") or [],
-            "dropped_unbound_risks": reply.get("dropped_unbound_risks", 0),
+            "unbound_risks": reply.get("unbound_risks", 0),
             "findings": reply.get("findings") or [],
             "assumptions": reply.get("assumptions") or [],
             "unknowns": reply.get("unknowns") or [],

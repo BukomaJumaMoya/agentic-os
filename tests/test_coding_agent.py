@@ -150,23 +150,24 @@ def test_feasibility_requires_components_and_forbids_code():
 
 
 def test_feasibility_risk_must_name_a_component():
-    """No unbound risk may reach the proposal.
+    """An unbound risk fails the whole reply.
 
-    Enforced by dropping it, not by rejecting the whole reply: discarding five
-    good components because the sixth risk was phrased loosely is the same
-    brittleness as failing a proposal over a three-character subject. The drop
-    is counted so a model that routinely fails to bind stays visible.
+    Dropping it would enforce the invariant in the output while hiding how often
+    the model misses its contract. This is not the arbitrary-gate case: a risk
+    that names no component does not match the contract the prompt states, and
+    feasibility is internal context, so a rejection costs one retry rather than
+    a bad document reaching a client.
     """
     with _Stub(_feasibility_reply(
             risks=["Importer: concurrent edits lose rows",
                    "something might go wrong somewhere"])):
-        reply, _, _, _ = coding.run_action(
-            {"action": "feasibility", "prompt": "x", "language": "python"})
-    assert len(reply["findings"]) == 1
-    assert reply["findings"][0]["location"] == "Importer"
-    assert reply["dropped_unbound_risks"] == 1
-    # Every surviving risk names a component.
-    assert all(f["location"] for f in reply["findings"])
+        try:
+            coding.run_action({"action": "feasibility", "prompt": "x", "language": "python"})
+        except llm.LLMError as e:
+            assert e.kind == "invalid_output"
+            assert "name no component" in str(e)
+        else:
+            raise AssertionError("unbound risk accepted")
     ok("feasibility_risk_must_name_a_component")
 
 
