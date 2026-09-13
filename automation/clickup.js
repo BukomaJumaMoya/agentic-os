@@ -17,10 +17,39 @@ const https = require('https');
 const { argv, env } = process;
 
 const TEAM_ID = '1200430000000602'; // Juma Moya's Workspace
+
+function printUsage() {
+  console.log('ClickUp CLI - Hermes wrapper');
+  console.log('Usage: node clickup.js <command> [options]');
+  console.log('Commands:');
+  console.log('  list-spaces                      List all spaces');
+  console.log('  list-lists --space <spaceId>    List lists in a space');
+  console.log('  list-tasks [--space <id>] [--list <id>] [--status <statusId>]  List tasks');
+  console.log('  get-task <taskId>               Get a single task');
+  console.log('  create-task --list <id> --name <name> [--desc <desc>] [--priority <priority>] [--status <statusId>]');
+  console.log('  update-task <taskId> [--name <name>] [--desc <desc>] [--status <status>] [--priority <priority>]');
+  console.log('  searchTasks <query>            Search tasks across team');
+  console.log('');
+  console.log('Auth: CLICKUP_TOKEN env var (personal token)');
+  console.log(`Team ID: ${TEAM_ID}`);
+}
+
+// Usage text must not require a credential. The token check below used to run
+// first, so `node clickup.js --help` exited 1 with "CLICKUP_TOKEN not set" and
+// the usage block -- the default case inside main()'s switch -- was
+// unreachable without one. That is what failed the smoke workflow on every
+// commit: reading the help for a CLI should not need an API token.
+const command = argv[2];
+if (!command || command === '--help' || command === '-h' || command === 'help') {
+  printUsage();
+  process.exit(0);
+}
+
 const TOKEN = env.CLICKUP_TOKEN;
 if (!TOKEN) {
   console.error('ERROR: CLICKUP_TOKEN environment variable not set.');
   console.error('Set it in Hermes .env or export CLICKUP_TOKEN=<your-token>');
+  console.error('Run `node clickup.js --help` for usage.');
   process.exit(1);
 }
 
@@ -162,19 +191,7 @@ async function main() {
       }
 
       default:
-        console.log('ClickUp CLI - Hermes wrapper');
-        console.log('Usage: node clickup.js <command> [options]');
-        console.log('Commands:');
-        console.log('  list-spaces                      List all spaces');
-        console.log('  list-lists --space <spaceId>    List lists in a space');
-        console.log('  list-tasks [--space <id>] [--list <id>] [--status <statusId>]  List tasks');
-        console.log('  get-task <taskId>               Get a single task');
-        console.log('  create-task --list <id> --name <name> [--desc <desc>] [--priority <priority>] [--status <statusId>]');
-        console.log('  update-task <taskId> [--name <name>] [--desc <desc>] [--status <status>] [--priority <priority>]');
-        console.log('  searchTasks <query>            Search tasks across team');
-        console.log('');
-        console.log('Auth: CLICKUP_TOKEN env var (personal token)');
-        console.log(`Team ID: ${TEAM_ID}`);
+        printUsage();
         break;
     }
   } catch (err) {
