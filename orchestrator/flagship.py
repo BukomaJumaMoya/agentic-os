@@ -21,7 +21,9 @@ BASE = Path(__file__).resolve().parent.parent
 # shadows the package when this module runs as a script.
 sys.path.insert(0, str(BASE))
 
-from orchestrator.approval import request_approval  # noqa: E402
+from orchestrator.approval import request_approval, ConfigError  # noqa: E402
+from orchestrator.llm import LLMError  # noqa: E402
+from orchestrator.proposal import synthesize_proposal  # noqa: E402
 
 # Mirrors orchestrator.approval.STATE_ROOT -- one knob to relocate runtime
 # state out of the repo tree (audit S-7 / P0-5).
@@ -79,60 +81,61 @@ def classify_enquiry(text: str) -> dict:
     }
 
 
-def synthesize_proposal(enquiry: str, research_findings: dict, project_context: dict, coding_context: dict, config: dict) -> dict:
-    proposal_id = str(uuid.uuid4())
-    now = datetime.now(timezone.utc).isoformat()
-
-    name = config.get("name", "Juma Moya")
-    business = config.get("business", "Bukoma Freelance Software Engineering")
-    services = config.get("services", [])
-    default_rate = config.get("default_rate", "$75–150/hr")
-    sla = config.get("proposal_sla", "48 hours")
-
-    subject = f"Re: {enquiry[:80]}"
-    body = f"""Hi,
-
-Thank you for reaching out.
-
-Based on your enquiry, here is an initial assessment:
-
-Service fit:
-{chr(10).join('- ' + s for s in services[:3])}
-
-Next steps:
-1. Clarify scope, timeline, and budget.
-2. Send a fixed-price or T&M proposal.
-3. Schedule a 30-minute alignment call.
-
-Response SLA: {sla}
-
-Regards,
-{name}
-{business}
-"""
-
-    return {
-        "proposal_id": proposal_id,
-        "created_at": now,
-        "subject": subject,
-        "body": body,
-        "config_used": {
-            "name": name,
-            "business": business,
-            "default_rate": default_rate,
-        },
-        "evidence": {
-            "research_findings": research_findings,
-            "project_context": project_context,
-            "coding_context": coding_context,
-        },
-    }
+# synthesize_proposal lives in orchestrator/proposal.py and is re-exported here
+# so that `from orchestrator.flagship import synthesize_proposal` keeps working.
+# The template that used to sit at this spot is gone on purpose: it emitted the
+# same three bullet points for every enquiry, which read as a considered reply
+# while containing nothing about the client. There is no fallback to it.
 
 
 def _exec_with_retry(name, payload, retries=2):
     from orchestrator.orchestrator import invoke
     output, error = invoke(name, payload, retries=retries)
     return output, error
+
+
+def _synthesis_failed(status, error, enquiry, classification, specialist_outputs,
+                      specialist_errors, retry_log, detail=None, config=None):
+    """Terminal result for an enquiry whose proposal could not be drafted.
+
+    Deliberately carries no ``proposal`` key rather than an empty one: a caller
+    that reaches for result["proposal"] should raise, not quietly send "". No
+    approval request is filed and no external action is queued, so there is
+    nothing for a human to approve and nothing for a retry to pick up.
+    """
+    return {
+        "workflow": "flagship",
+        "version": "1.0.0",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "enquiry": enquiry,
+        "classification": classification,
+        "agents_invoked": classification.get("selected_agents", []),
+        "specialist_outputs": specialist_outputs,
+        "proposal": None,
+        "verification": {
+            "config_present": bool(config),
+            "proposal_non_empty": False,
+            "missing_information_identified": bool(classification.get("missing_information")),
+            "agents_selected": classification.get("selected_agents"),
+            "specialist_errors": specialist_errors,
+            "retry_log": retry_log,
+        },
+        "requires_approval": False,
+        "approval_prompt_delivered": None,
+        "approval_request": None,
+        "external_actions": [],
+        "status": status,
+        "error": error,
+        "error_detail": detail,
+        "retry_log": retry_log,
+        "specialist_errors": specialist_errors,
+        "recovery": {
+            "resume_with": "No proposal was produced. Fix the cause below and re-run "
+                           "the enquiry; there is no approval request to resume.",
+            "do_not_retry_external_action_automatically": True,
+            "telegram_commands": [],
+        },
+    }
 
 
 def run_workflow(enquiry: str, approval_mode: bool = True, force_agent: str = None) -> dict:
@@ -225,7 +228,30 @@ def run_workflow(enquiry: str, approval_mode: bool = True, force_agent: str = No
         elif agent == "coding":
             coding_context = output
 
-    proposal = synthesize_proposal(enquiry, research_findings, project_context, coding_context, config)
+    specialist_outputs = {
+        "research": research_findings,
+        "projects": project_context,
+        "coding": coding_context,
+    }
+
+    # Synthesis is the point of no return for content: past here every field the
+    # client would read exists. If the model could not produce one, the workflow
+    # terminates here with no proposal object at all -- no template, no partial
+    # draft, nothing an approver could mistake for a reply awaiting a decision.
+    try:
+        proposal = synthesize_proposal(
+            enquiry, research_findings, project_context, coding_context, config)
+    except ConfigError as e:
+        return _synthesis_failed(
+            "llm_unavailable", str(e), enquiry, classification,
+            specialist_outputs, specialist_errors, retry_log,
+            detail=None, config=config)
+    except LLMError as e:
+        status = "llm_invalid_output" if e.kind == "invalid_output" else "llm_unavailable"
+        return _synthesis_failed(
+            status, str(e), enquiry, classification,
+            specialist_outputs, specialist_errors, retry_log,
+            detail=e.detail, config=config)
 
     verification = {
         "config_present": bool(config),
@@ -279,11 +305,7 @@ def run_workflow(enquiry: str, approval_mode: bool = True, force_agent: str = No
         "enquiry": enquiry,
         "classification": classification,
         "agents_invoked": classification["selected_agents"],
-        "specialist_outputs": {
-            "research": research_findings,
-            "projects": project_context,
-            "coding": coding_context,
-        },
+        "specialist_outputs": specialist_outputs,
         "proposal": proposal,
         "verification": verification,
         "requires_approval": True,
