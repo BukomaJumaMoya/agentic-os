@@ -148,12 +148,18 @@ def test_e2e_external_action_execution_blocks_without_approval():
     request_id = result["approval_request"]["request_id"]
     external_action = result["external_actions"][0]
     if patch is not None:
-        with patch("external_action._post", return_value={"ok": False, "status": 403, "error": "forbidden"}):
+        with patch("orchestrator.external_action._send_telegram",
+                   return_value={"sent": False, "delivery_status": "invoke_failed",
+                                 "conversation_ref": None, "reason": "forbidden",
+                                 "result": {}}):
             exec_result = execute_external_action(external_action, result.get("proposal", {}))
     else:
         exec_result = {"ok": False, "reason": "missing_decision"}
     assert exec_result["ok"] is False
-    assert exec_result["reason"] == "missing_decision"
+    # "pending" is the contract resume_if_approved actually returns for an
+    # undecided request (see test_step6_approval); "missing_decision" was a
+    # string the code never produced.
+    assert exec_result["reason"] == "pending"
     cleanup(request_id)
     teardown()
     print("PASS: e2e_external_action_execution_blocks_without_approval")
@@ -167,7 +173,10 @@ def test_e2e_external_action_execution_with_approval():
     record_decision(request_id, approved=True, approver="juma", reason="approved")
     external_action = result["external_actions"][0]
     if patch is not None:
-        with patch("orchestrator.telegram_approval._post", return_value={"ok": True, "status": 200}):
+        with patch("orchestrator.external_action._send_telegram",
+                   return_value={"sent": True, "delivery_status": "sent",
+                                 "conversation_ref": "conv_" + "0" * 32,
+                                 "reason": None, "result": {}}):
             exec_result = execute_external_action(external_action, result.get("proposal", {}))
     else:
         exec_result = {"ok": False, "reason": "missing_decision"}

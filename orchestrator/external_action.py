@@ -74,30 +74,24 @@ def execute_external_action(external_action: dict, proposal: dict = None) -> dic
     if action_type == "send_proposal":
         proposal_text = proposal.get("body") or proposal.get("subject") or ""
         message = proposal_text if proposal_text else json.dumps(proposal, indent=2)[:4000]
-        payload = {
-            "to": recipient,
-            "text": message,
-            "approval_request_id": request_id,
-        }
-        result = _post("/message/send", payload)
-        executed = bool(result.get("ok")) or int(result.get("status", 0)) == 200
+        result = _send_telegram(recipient, message)
+        executed = bool(result.get("sent"))
         verification.update({
             "channel": "telegram",
             "proposal_id": proposal.get("proposal_id"),
+            "delivery_status": result.get("delivery_status"),
+            "conversation_ref": result.get("conversation_ref"),
             "sent": executed,
         })
 
     elif action_type == "send_message":
         text = proposal.get("text") or json.dumps(proposal, indent=2)[:4000]
-        payload = {
-            "to": recipient,
-            "text": text,
-            "approval_request_id": request_id,
-        }
-        result = _post("/message/send", payload)
-        executed = bool(result.get("ok")) or int(result.get("status", 0)) == 200
+        result = _send_telegram(recipient, text)
+        executed = bool(result.get("sent"))
         verification.update({
             "channel": "telegram",
+            "delivery_status": result.get("delivery_status"),
+            "conversation_ref": result.get("conversation_ref"),
             "sent": executed,
         })
 
@@ -164,12 +158,16 @@ def execute_external_action(external_action: dict, proposal: dict = None) -> dic
     }
 
 
-def _post(path: str, payload: dict, timeout: int = 30) -> dict:
+def _send_telegram(user_id: str, text: str) -> dict:
+    """Outbound send. Delegates to the one implementation in telegram_approval
+    so the conversationRef cache and delivery_status vocabulary are shared."""
     try:
-        from orchestrator.telegram_approval import _post as _post_impl
-        return _post_impl(path, payload, timeout=timeout)
+        from orchestrator.telegram_approval import send_direct_message
+        return send_direct_message(user_id, text)
     except Exception as e:
-        return {"ok": False, "status": 0, "error": str(e)}
+        return {"sent": False, "delivery_status": "invoke_failed",
+                "conversation_ref": None, "reason": str(e),
+                "result": {"error": str(e)}}
 
 
 def main():

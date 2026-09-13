@@ -218,6 +218,45 @@ def resolve_conversation_ref(user_id: str, use_cache: bool = True):
                   "conversations_seen": len(conversations)}
 
 
+def send_direct_message(user_id: str, text: str) -> dict:
+    """Deliver text to an allowlisted Telegram DM via conversations_send.
+
+    The single outbound send path. Shares the conversationRef cache and the
+    delivery_status vocabulary with send_approval_prompt, so a caller can never
+    invent a fifth meaning for "sent".
+
+    Returns {"sent", "delivery_status", "conversation_ref", "reason", "result"}.
+    """
+    conversation_ref, problem = resolve_conversation_ref(user_id)
+    if problem is not None:
+        # Precondition failure, not a transport error. Do not retry.
+        return {"sent": False, "delivery_status": "not_attempted",
+                "conversation_ref": None, "reason": problem["reason"],
+                "result": problem}
+
+    invocation = _invoke_tool(
+        "conversations_send",
+        {"conversationRef": conversation_ref, "message": text},
+    )
+    status = invocation["result"].get("status") if (
+        invocation["ok"] and isinstance(invocation["result"], dict)) else None
+    if not invocation["ok"]:
+        delivery_status = "invoke_failed"
+        reason = invocation["error"] or f"HTTP {invocation['http_status']}"
+    elif status == "sent":
+        delivery_status = "sent"
+        reason = None
+    elif status in _NOT_DELIVERED_REASON:
+        delivery_status = status  # queued | suppressed | unknown, verbatim
+        reason = _NOT_DELIVERED_REASON[status]
+    else:
+        delivery_status = "unrecognised_status"
+        reason = f"conversations_send returned status={status!r}"
+    return {"sent": delivery_status == "sent", "delivery_status": delivery_status,
+            "conversation_ref": conversation_ref, "reason": reason,
+            "result": invocation}
+
+
 def send_approval_prompt(request_id: str, proposal: dict) -> dict:
     """
     Send an approval prompt to JUMA via OpenClaw Telegram channel.
@@ -279,33 +318,11 @@ def send_approval_prompt(request_id: str, proposal: dict) -> dict:
                 "delivery_status": "not_attempted",
                 "reason": f"allowlist not configured: {e}"}
 
-    conversation_ref, problem = resolve_conversation_ref(recipient)
-    if problem is not None:
-        # Precondition failure, not a transport error. Do not retry.
-        result = problem
-        delivery_status = "not_attempted"
-        reason = problem["reason"]
-        conversation_ref = None
-    else:
-        invocation = _invoke_tool(
-            "conversations_send",
-            {"conversationRef": conversation_ref, "message": text},
-        )
-        result = invocation
-        status = invocation["result"].get("status") if (
-            invocation["ok"] and isinstance(invocation["result"], dict)) else None
-        if not invocation["ok"]:
-            delivery_status = "invoke_failed"
-            reason = invocation["error"] or f"HTTP {invocation['http_status']}"
-        elif status == "sent":
-            delivery_status = "sent"
-            reason = None
-        elif status in _NOT_DELIVERED_REASON:
-            delivery_status = status  # queued | suppressed | unknown, verbatim
-            reason = _NOT_DELIVERED_REASON[status]
-        else:
-            delivery_status = "unrecognised_status"
-            reason = f"conversations_send returned status={status!r}"
+    delivery = send_direct_message(recipient, text)
+    delivery_status = delivery["delivery_status"]
+    reason = delivery["reason"]
+    conversation_ref = delivery["conversation_ref"]
+    result = delivery["result"]
 
     sent = delivery_status == "sent"
     state = delivery_status
