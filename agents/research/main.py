@@ -43,7 +43,7 @@ import urllib.error
 import urllib.request
 
 AGENT_NAME = "research"
-VERSION = "2.0.0"
+VERSION = "2.1.0"
 
 API_URL = "https://api.tavily.com/search"
 USER_AGENT = f"juma-freelance-ai-{AGENT_NAME}/{VERSION}"
@@ -194,9 +194,22 @@ def main():
         print(json.dumps({"error": f"Invalid input JSON: {e}"}))
         sys.exit(1)
 
-    query = data.get("query")
-    if not query:
-        print(json.dumps({"error": "Missing required field: query"}))
+    # `queries` is the current contract: the caller supplies focused search
+    # phrases derived from the enquiry. `query` stays supported for a single
+    # phrase. Each runs separately and the results are merged, because one
+    # search phrase covers one angle of a problem.
+    queries = data.get("queries")
+    if isinstance(queries, str):
+        queries = [queries]
+    if not isinstance(queries, list):
+        queries = []
+    queries = [str(q).strip() for q in queries if str(q or "").strip()]
+    if not queries:
+        single = data.get("query")
+        if single and str(single).strip():
+            queries = [str(single).strip()]
+    if not queries:
+        print(json.dumps({"error": "Missing required field: queries"}))
         sys.exit(1)
 
     max_sources = int(data.get("max_sources", 5))
@@ -209,16 +222,48 @@ def main():
     assumptions = []
     facts = []
 
-    try:
-        search_results, search_meta = search_web(query, max_sources,
-                                                 include_raw=fetch_content)
-    except Exception as e:
-        # search_web is meant to classify its own failures; this is a bug guard.
-        search_results = []
-        search_meta = {"url": API_URL, "http_status": None,
-                       "outcome": "search_failed",
-                       "detail": f"unhandled {type(e).__name__}: {e}",
-                       "results_seen": 0, "provider": "tavily"}
+    per_query = []
+    search_results = []
+    seen_urls = set()
+    for q in queries:
+        try:
+            results, meta = search_web(q, max_sources, include_raw=fetch_content)
+        except Exception as e:
+            # search_web classifies its own failures; this is a bug guard.
+            results, meta = [], {"url": API_URL, "http_status": None,
+                                 "outcome": "search_failed",
+                                 "detail": f"unhandled {type(e).__name__}: {e}",
+                                 "results_seen": 0, "provider": "tavily"}
+        meta["query"] = q
+        per_query.append(meta)
+        for r in results:
+            # Two queries on one problem routinely surface the same page.
+            if r["url"] in seen_urls:
+                continue
+            seen_urls.add(r["url"])
+            r["matched_query"] = q
+            search_results.append(r)
+
+    # One bad query must not mask a good one: "complete" if anything was found.
+    # Otherwise report the most specific failure seen, in severity order, so a
+    # provider block is never downgraded to an empty result set.
+    outcomes = [m.get("outcome") for m in per_query]
+    if search_results:
+        overall = "complete"
+    else:
+        overall = next((o for o in ("blocked", "search_failed", "no_results")
+                        if o in outcomes), "no_results")
+    detail = next((m.get("detail") for m in per_query
+                   if m.get("outcome") == overall and m.get("detail")), None)
+    search_meta = {
+        "provider": "tavily",
+        "url": API_URL,
+        "outcome": overall,
+        "detail": detail,
+        "queries": per_query,
+        "results_seen": sum(m.get("results_seen") or 0 for m in per_query),
+        "http_status": per_query[0].get("http_status") if per_query else None,
+    }
 
     outcome = search_meta.get("outcome")
     if outcome == "blocked":
@@ -244,7 +289,8 @@ def main():
     output = {
         "agent": AGENT_NAME,
         "version": VERSION,
-        "query": query,
+        "queries": queries,
+        "query": queries[0] if queries else "",
         "findings": findings,
         "facts": facts,
         "assumptions": assumptions,

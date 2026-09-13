@@ -24,6 +24,7 @@ sys.path.insert(0, str(BASE))
 from orchestrator.approval import request_approval, ConfigError  # noqa: E402
 from orchestrator.llm import LLMError  # noqa: E402
 from orchestrator.proposal import synthesize_proposal  # noqa: E402
+from orchestrator.research_query import extract_queries  # noqa: E402
 
 # Mirrors orchestrator.approval.STATE_ROOT -- one knob to relocate runtime
 # state out of the repo tree (audit S-7 / P0-5).
@@ -166,6 +167,7 @@ def run_workflow(enquiry: str, approval_mode: bool = True, force_agent: str = No
     config = load_config()
 
     research_findings = {}
+    research_query_meta = {}
     project_context = {}
     coding_context = {}
     specialist_errors = []
@@ -175,7 +177,39 @@ def run_workflow(enquiry: str, approval_mode: bool = True, force_agent: str = No
     for agent in classification["selected_agents"]:
         payload = {}
         if agent == "research":
-            payload = {"query": enquiry[:200], "max_sources": 3, "fetch_content": True}
+            # Never search the client's prose. enquiry[:200] sent their words --
+            # company name included -- to a third-party search API and returned
+            # CRM templates and a YouTube video for an appointment-reminder
+            # problem. A model names the domain instead.
+            try:
+                extraction = extract_queries(enquiry)
+            except (ConfigError, LLMError) as e:
+                research_findings = {
+                    "agent": "research", "queries": [], "findings": [],
+                    "facts": [], "assumptions": [],
+                    "unknowns": ["No research was attempted: search queries "
+                                 "could not be derived from the enquiry."],
+                    "status": "skipped_no_queries",
+                    "search": {"outcome": "skipped", "detail": str(e)[:300]},
+                }
+                specialist_errors.append(
+                    {"agent": agent, "error": f"research skipped: {e}"})
+                continue
+            if not extraction["queries"]:
+                reason = extraction.get("skipped_reason") or \
+                    "the enquiry was too vague to search for usefully"
+                research_findings = {
+                    "agent": "research", "queries": [], "findings": [],
+                    "facts": [], "assumptions": [],
+                    "unknowns": [f"No research was attempted: {reason}"],
+                    "status": "skipped_no_queries",
+                    "search": {"outcome": "skipped", "detail": reason},
+                    "query_extraction": extraction.get("generation"),
+                }
+                continue
+            payload = {"queries": extraction["queries"], "max_sources": 3,
+                       "fetch_content": True}
+            research_query_meta = extraction
         elif agent == "projects":
             payload = {"action": "search_tasks", "query": enquiry[:100]}
         elif agent == "coding":
@@ -196,6 +230,11 @@ def run_workflow(enquiry: str, approval_mode: bool = True, force_agent: str = No
             continue
 
         if agent == "research":
+            output["query_extraction"] = {
+                "queries": research_query_meta.get("queries"),
+                "domain": research_query_meta.get("domain"),
+                "generation": research_query_meta.get("generation"),
+            }
             research_findings = output
             # blocked / search_failed / no_results are all "no evidence", but
             # they are recorded distinctly so a provider block is never filed
