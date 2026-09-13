@@ -52,6 +52,36 @@ def _request_path(request_id: str) -> Path:
     return _approval.request_path(request_id)
 
 
+def _summarize(rec, status, decision=None):
+    """One approval request, reduced to what a chat reply should carry.
+
+    LIST and STATUS used to return rec["proposal"] whole. That object holds the
+    full proposal body, config_used, the model's raw reply, and the evidence
+    block -- which includes third-party research text scraped from the open web.
+    A single request file is ~30 KB. Pushing that into a Telegram reply dumps
+    client-facing prose and untrusted page content into a chat window on every
+    listing, where it is easy to mistake a draft for something already sent.
+
+    The identifiers are what a listing is for; the body is what /apr_approve is
+    for. Anything not named here is deliberately withheld.
+    """
+    proposal = rec.get("proposal") or {}
+    summary = {
+        "request_id": rec.get("request_id"),
+        "status": status,
+        "timestamp": rec.get("timestamp"),
+        "subject": proposal.get("subject"),
+    }
+    if decision:
+        summary["decision"] = {
+            "approved": decision.get("approved"),
+            "approver": decision.get("approver"),
+            "reason": decision.get("reason"),
+            "timestamp": decision.get("timestamp"),
+        }
+    return summary
+
+
 def _list_pending():
     pending = []
     if not _resolve_request_dir().exists():
@@ -65,12 +95,7 @@ def _list_pending():
         if not rid:
             continue
         if not _decision_path(rid).exists():
-            pending.append({
-                "request_id": rid,
-                "status": "pending",
-                "timestamp": rec.get("timestamp"),
-                "proposal": rec.get("proposal"),
-            })
+            pending.append(_summarize(rec, "pending"))
             continue
         try:
             decision = json.loads(_decision_path(rid).read_text())
@@ -136,9 +161,12 @@ def handle_telegram_command(user_id: str, text: str) -> dict:
             return {"ok": False, "error": "request_not_found", "request_id": request_id}
         rec = json.loads(req_path.read_text())
         if not dec_path.exists():
-            return {"ok": True, "status": "pending", "request_id": request_id, "proposal": rec.get("proposal")}
+            # Summary only -- see _summarize. The proposal body is reached by
+            # acting on the request, not by querying it.
+            return {"ok": True, **_summarize(rec, "pending")}
         decision = json.loads(dec_path.read_text())
-        return {"ok": True, "status": "approved" if decision.get("approved") else "rejected", "request_id": request_id, "decision": decision, "proposal": rec.get("proposal")}
+        status = "approved" if decision.get("approved") else "rejected"
+        return {"ok": True, **_summarize(rec, status, decision)}
 
     if command == "LIST":
         return {"ok": True, "pending": _list_pending()}
