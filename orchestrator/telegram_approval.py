@@ -182,6 +182,29 @@ def _store_cached_ref(user_id: str, ref: str) -> None:
         pass  # the cache is an optimisation; never fail a send over it
 
 
+def _target_matches(target, user_id) -> bool:
+    """Does this conversation belong to user_id?
+
+    The gateway returns channel-qualified targets -- "telegram:1360833951" --
+    while callers hold the bare id. A plain equality check never matched, so
+    every send fell through to "no_conversation_found" despite the conversation
+    being right there in the listing. It went unnoticed because the
+    conversationRef cache answered first and the listing was rarely reached;
+    once the cache was empty, every send failed.
+
+    Accept either form, and compare only the id portion.
+    """
+    if target is None:
+        return False
+    text = str(target).strip()
+    if not text:
+        return False
+    wanted = str(user_id).strip()
+    # "telegram:123" -> "123"; a bare "123" is left alone.
+    bare = text.split(":", 1)[1] if ":" in text else text
+    return text == wanted or bare.strip() == wanted
+
+
 def resolve_conversation_ref(user_id: str, use_cache: bool = True):
     """Return (conversationRef, problem) for the allowlisted Telegram DM.
 
@@ -205,7 +228,7 @@ def resolve_conversation_ref(user_id: str, use_cache: bool = True):
     for item in conversations:
         if not isinstance(item, dict) or item.get("kind") != "direct":
             continue
-        if str(item.get("target", "")).strip() != str(user_id):
+        if not _target_matches(item.get("target"), user_id):
             continue
         ref = item.get("conversationRef")
         if isinstance(ref, str) and ref:
