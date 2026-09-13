@@ -190,7 +190,7 @@ would fit any other enquiry has failed.
 Return ONLY a JSON object, no prose around it, with exactly these keys:
 
 {
-  "subject": "one line, under 70 characters, naming this client's actual problem. No 'Re:' prefix, no company boilerplate, no line breaks",
+  "subject": "one line, AT MOST 60 characters, naming this client's actual problem. Count them. No 'Re:' prefix, no company boilerplate, no line breaks",
   "understanding": "2-4 sentences restating their situation and what they need, in their specifics",
   "services": [
     {"service": "<exact string from CANDIDATE SERVICES>",
@@ -240,6 +240,11 @@ def _validate(data: dict, allowed_services: set) -> list:
     elif "\n" in subject or "\r" in subject:
         problems.append("subject must be a single line")
     elif len(subject) > 70:
+        # The prompt asks for 60; the gate is 70. Models routinely graze a
+        # stated ceiling by a few characters, and discarding an otherwise valid
+        # proposal over three of them is not a useful failure. Beyond 70 the
+        # instruction was ignored rather than approximated, which is worth
+        # failing on -- nothing here is silently trimmed.
         problems.append(
             f"subject is {len(subject)} characters, above the 70 character limit")
     elif len(subject) < 10:
