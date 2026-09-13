@@ -10,6 +10,10 @@ evidence/*.md
 .approval/
 evidence/
 automation/evidence/
+# Coding-agent output: model-generated code written under WORKSPACE_ROOT.
+# Never runtime state that belongs in git, and never reviewed before it
+# lands on disk.
+workspace/
 .vscode/
 .idea/
 .DS_Store

@@ -339,7 +339,7 @@ def complete(system: str, user: str, *, model: str = None, max_tokens: int = 200
     available = configured_providers()
     if not available:
         raise ConfigError(
-            "No model provider is configured; refusing to draft a proposal "
+            "No model provider is configured; refusing to continue "
             "without a model. Set at least one of "
             + ", ".join(p["key_env"] for p in PROVIDERS)
             + " in the environment -- keys must never be stored in "
