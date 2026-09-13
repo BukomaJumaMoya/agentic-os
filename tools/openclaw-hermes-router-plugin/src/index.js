@@ -2,12 +2,14 @@ import { defineToolPlugin } from "openclaw/plugin-sdk/tool-plugin";
 import { Type } from "typebox";
 import http from "node:http";
 import { spawn } from "node:child_process";
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 // dist/index.js -> plugin root -> tools/ -> repo root
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const TELEGRAM_COMMANDS = path.join(REPO_ROOT, "orchestrator", "telegram_commands.py");
+const ENQUIRY_RUNNER = path.join(REPO_ROOT, "orchestrator", "enquiry_runner.py");
 const PYTHON = process.env.AGENTIC_PYTHON || "python";
 
 /**
@@ -140,6 +142,119 @@ function buildApprovalCommand(def) {
         const message = error instanceof Error ? error.message : String(error);
         return {
           text: JSON.stringify({ ok: false, error: `/${def.name} failed: ${message}` }, null, 2),
+        };
+      }
+    },
+  };
+}
+
+// Same ceiling as orchestrator/llm.py MAX_ENQUIRY_CHARS. Enforced here so the
+// sender gets an immediate, specific refusal, and again in enquiry_runner.py
+// next to the model call. Refuse, never truncate: silently dropping the tail of
+// an enquiry loses exactly the part the client bothered to explain.
+const MAX_ENQUIRY_CHARS = 8000;
+
+/**
+ * Start the flagship workflow and return without waiting for it.
+ *
+ * A proposal takes 30s+ (one model call plus up to three specialist
+ * subprocesses). A slash-command handler that awaited that would exceed the
+ * gateway's handler budget and strand the sender, so the child is detached and
+ * unref'd: it outlives this handler, and outlives a gateway restart.
+ *
+ * stdout and stderr go to a log file rather than a pipe. An unread pipe on a
+ * detached child fills its buffer and blocks the writer -- the workflow would
+ * hang partway through with no indication why.
+ */
+function startEnquiryWorkflow(userId, enquiry) {
+  const stateRoot = process.env.AGENTIC_STATE_DIR || REPO_ROOT;
+  const logDir = path.join(stateRoot, "logs");
+  let logFd = "ignore";
+  try {
+    fs.mkdirSync(logDir, { recursive: true });
+    logFd = fs.openSync(path.join(logDir, "enquiry-runner.log"), "a");
+  } catch {
+    // Logging is a convenience; losing it must not stop the run.
+  }
+
+  const proc = spawn(PYTHON, [ENQUIRY_RUNNER], {
+    cwd: REPO_ROOT,
+    detached: true,
+    stdio: ["pipe", logFd, logFd],
+  });
+  proc.on("error", () => { /* reported by the acknowledgement path below */ });
+  proc.stdin.write(JSON.stringify({ user_id: userId, enquiry }));
+  proc.stdin.end();
+  proc.unref();
+  return proc.pid ?? null;
+}
+
+/**
+ * /apr_enquiry <text> -- run the flagship workflow on an inbound enquiry.
+ *
+ * Acknowledges immediately; the approval prompt arrives afterwards by the same
+ * path every other proposal uses. Failures are announced by enquiry_runner.py
+ * to this same chat, because a dropped enquiry is worse than a visible error.
+ */
+function buildEnquiryCommand() {
+  return {
+    name: "apr_enquiry",
+    description: "Draft a proposal for a client enquiry. Takes the enquiry text.",
+    acceptsArgs: true,
+    requireAuth: true,
+    channels: ["telegram"],
+    async handler(ctx) {
+      if (!ctx?.isAuthorizedSender) {
+        return { text: JSON.stringify({ ok: false, error: "not_allowed" }, null, 2) };
+      }
+      const senderId = normalizeSenderId(ctx?.senderId);
+      if (!senderId) {
+        return {
+          text: JSON.stringify({
+            ok: false,
+            error: "no_verified_sender",
+            detail:
+              "The command context carried no senderId; refusing to run a " +
+              "workflow for an unattributed enquiry.",
+          }, null, 2),
+        };
+      }
+
+      const enquiry = String(ctx?.args ?? "").trim();
+      if (!enquiry) {
+        return {
+          text:
+            "Send the enquiry text with the command, for example:\n" +
+            "/apr_enquiry Brown Optical Limited needs a system to message clients...",
+        };
+      }
+      if (enquiry.length > MAX_ENQUIRY_CHARS) {
+        return {
+          text:
+            `That enquiry is ${enquiry.length} characters, above the ` +
+            `${MAX_ENQUIRY_CHARS} limit.\n\n` +
+            "Refusing rather than truncating, so none of it is silently lost. " +
+            "Send a shorter version.",
+        };
+      }
+
+      try {
+        const pid = startEnquiryWorkflow(senderId, enquiry);
+        const preview = enquiry.length > 80 ? enquiry.slice(0, 80) + "..." : enquiry;
+        return {
+          text:
+            "Working on it.\n\n" +
+            `Enquiry: ${preview}\n` +
+            `Length: ${enquiry.length} characters\n\n` +
+            "Drafting a proposal now — this takes around half a minute. " +
+            "An approval prompt will follow, or a message saying why none came.",
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return {
+          text:
+            "Could not start the workflow, so nothing is running.\n\n" +
+            `Error: ${message}`,
         };
       }
     },
@@ -373,6 +488,7 @@ pluginEntry.register = function register(api) {
   const result = baseRegister.call(this, api);
   if (typeof api?.registerCommand === "function") {
     for (const def of APPROVAL_COMMANDS) api.registerCommand(buildApprovalCommand(def));
+    api.registerCommand(buildEnquiryCommand());
   }
   return result;
 };

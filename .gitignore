@@ -14,6 +14,8 @@ automation/evidence/
 # Never runtime state that belongs in git, and never reviewed before it
 # lands on disk.
 workspace/
+# Detached enquiry-runner output (client enquiry text).
+logs/
 .vscode/
 .idea/
 .DS_Store
