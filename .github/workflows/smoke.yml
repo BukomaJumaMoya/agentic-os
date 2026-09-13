@@ -13,4 +13,8 @@ jobs:
           node-version: '20'
       - run: node --check automation/clickup.js
       - run: node automation/clickup.js --help
-      - run: pwsh -NoProfile -Command "$errors = $null; $null = [System.Management.Automation.Language.Parser]::ParseFile('automation/generate-proposal.ps1', [ref]$null, [ref]$errors); if ($errors) { foreach ($e in $errors) { Write-Error $e }; exit 1 } else { Write-Host 'OK' }"
+      # $ must be escaped: the step runs under bash, which expands $errors and
+      # $null before pwsh ever sees the command, leaving "if () {" and a
+      # ParserError that blamed the script. generate-proposal.ps1 parses
+      # cleanly; the step was broken. quality.yml already escapes these.
+      - run: pwsh -NoProfile -Command "\$errors = \$null; \$null = [System.Management.Automation.Language.Parser]::ParseFile('automation/generate-proposal.ps1', [ref]\$null, [ref]\$errors); if (\$errors) { foreach (\$e in \$errors) { Write-Error \$e }; exit 1 } else { Write-Host 'OK' }"
