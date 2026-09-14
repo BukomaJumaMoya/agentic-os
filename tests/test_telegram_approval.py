@@ -17,6 +17,11 @@ import pytest
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE / "orchestrator"))
 
+# Blocks outbound delivery for this process (see tests/_no_outbound.py).
+# MUST precede the orchestrator imports below.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _no_outbound  # noqa: E402,F401
+
 from telegram_approval import send_approval_prompt, record_telegram_decision, _resolve_request_dir  # noqa: E402
 
 

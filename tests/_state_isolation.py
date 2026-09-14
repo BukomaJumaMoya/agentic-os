@@ -19,6 +19,11 @@ these suites run as plain scripts (``python tests/foo.py``), where no pytest
 fixture exists. This works under both plain execution and pytest.
 """
 
+# Blocks outbound delivery for this process and every agent subprocess. State
+# isolation and send blocking are the same requirement -- a suite that must not
+# touch real approval files must not touch a real phone either.
+import _no_outbound  # noqa: F401
+
 import atexit
 import os
 import shutil

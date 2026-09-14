@@ -37,8 +37,17 @@ from pathlib import Path
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
 
-EVIDENCE_DIR = BASE / "evidence"
-APPROVAL_DIR = BASE / ".approval"
+# Audit F-23 + outbound block: this suite calls run_workflow, which writes
+# approval state and delivers a proposal PDF. Both imports MUST precede the
+# orchestrator imports, and the directory constants MUST come from the isolation
+# module -- they previously pointed at the repository's real evidence/ and
+# .approval/, which this suite then rmtree'd.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _state_isolation  # noqa: E402,F401
+import _llm_stub  # noqa: E402,F401 -- offline model boundary
+
+EVIDENCE_DIR = _state_isolation.EVIDENCE_DIR
+APPROVAL_DIR = _state_isolation.APPROVAL_DIR
 
 from orchestrator.flagship import run_workflow, request_approval, classify_enquiry
 from orchestrator.approval import record_decision, resume_if_approved, cleanup, is_approved
@@ -62,7 +71,11 @@ def test_normal_client_enquiry():
     enquiry = "Hi, I need a web app for my small business. Budget around $10k, timeline 2 months."
     result = run_workflow(enquiry, approval_mode=True)
     assert result["workflow"] == "flagship"
-    assert result["status"] == "awaiting_approval"
+    # Delivery-dependent: with outbound blocked in tests the prompt is never
+    # delivered, so assert the invariant -- status and the delivery flag agree --
+    # rather than an outcome that depends on a real Telegram send.
+    assert result["status"] in ("awaiting_approval", "approval_prompt_undelivered")
+    assert result["approval_prompt_delivered"] is (result["status"] == "awaiting_approval")
     assert "proposal" in result
     assert "classification" in result
     assert "agents_invoked" in result
@@ -113,7 +126,11 @@ def test_rejected_proposal():
     setup()
     enquiry = "Need a mobile app, budget $20k, timeline 3 months."
     result = run_workflow(enquiry, approval_mode=True)
-    assert result["status"] == "awaiting_approval"
+    # Delivery-dependent: with outbound blocked in tests the prompt is never
+    # delivered, so assert the invariant -- status and the delivery flag agree --
+    # rather than an outcome that depends on a real Telegram send.
+    assert result["status"] in ("awaiting_approval", "approval_prompt_undelivered")
+    assert result["approval_prompt_delivered"] is (result["status"] == "awaiting_approval")
     request_id = result["approval_request"]["request_id"]
     record_decision(request_id, approved=False, approver="juma", reason="scope unclear")
     assert is_approved(request_id) is False
@@ -128,7 +145,11 @@ def test_approved_proposal():
     setup()
     enquiry = "We need a landing page, budget $5k, timeline 3 weeks."
     result = run_workflow(enquiry, approval_mode=True)
-    assert result["status"] == "awaiting_approval"
+    # Delivery-dependent: with outbound blocked in tests the prompt is never
+    # delivered, so assert the invariant -- status and the delivery flag agree --
+    # rather than an outcome that depends on a real Telegram send.
+    assert result["status"] in ("awaiting_approval", "approval_prompt_undelivered")
+    assert result["approval_prompt_delivered"] is (result["status"] == "awaiting_approval")
     request_id = result["approval_request"]["request_id"]
     record_decision(request_id, approved=True, approver="juma", reason="approved")
     assert is_approved(request_id) is True
@@ -143,7 +164,11 @@ def test_approval_rejection():
     setup()
     enquiry = "Need a mobile app, budget $20k, timeline 3 months."
     result = run_workflow(enquiry, approval_mode=True)
-    assert result["status"] == "awaiting_approval"
+    # Delivery-dependent: with outbound blocked in tests the prompt is never
+    # delivered, so assert the invariant -- status and the delivery flag agree --
+    # rather than an outcome that depends on a real Telegram send.
+    assert result["status"] in ("awaiting_approval", "approval_prompt_undelivered")
+    assert result["approval_prompt_delivered"] is (result["status"] == "awaiting_approval")
     request_id = result["approval_request"]["request_id"]
     record_decision(request_id, approved=False, approver="juma", reason="scope unclear")
     assert is_approved(request_id) is False
@@ -210,7 +235,10 @@ def test_partial_workflow_completion():
     assert "research" in result["agents_invoked"]
     assert "projects" in result["agents_invoked"]
     assert "coding" in result["agents_invoked"]
-    assert result["status"] in ["awaiting_approval", "error"]
+    # Same delivery-dependence as above: "approval_prompt_undelivered" is a
+    # completed workflow whose prompt did not leave the machine, which is the
+    # expected outcome whenever outbound delivery is blocked.
+    assert result["status"] in ["awaiting_approval", "approval_prompt_undelivered", "error"]
     teardown()
     print("PASS: partial_workflow_completion")
 

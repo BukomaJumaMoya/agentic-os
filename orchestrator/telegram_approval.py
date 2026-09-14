@@ -47,6 +47,24 @@ _CONVERSATION_CACHE_PATH = _approval.APPROVAL_DIR / ".conversation-cache.json"
 _conversation_ref_memo = {}
 
 
+# Structural block on outbound delivery.
+#
+# Set by tests/_no_outbound.py, which _state_isolation and conftest both import,
+# and inherited by agent subprocesses because it lives in the environment.
+#
+# The check is here, inside the transport, rather than in each test. A suite
+# that forgets to mock a sending function is refused by the transport; a suite
+# that mocks the one sending function it knows about is not protected against
+# the next one. Six proposal PDFs reached a real phone from a test sweep because
+# document delivery was added after the suites had already mocked the prompt.
+OUTBOUND_BLOCK_ENV = "AGENTIC_BLOCK_OUTBOUND"
+
+
+def outbound_blocked() -> bool:
+    """True when this process must not send anything to the outside world."""
+    return str(os.getenv(OUTBOUND_BLOCK_ENV, "")).strip().lower() in ("1", "true", "yes")
+
+
 def _gateway_url() -> str:
     return _approval.gateway_url()
 
@@ -120,6 +138,9 @@ def _invoke_tool(name: str, args: dict, timeout: int = 30) -> dict:
     Returns a normalised envelope {http_status, ok, result, error} so callers
     can tell transport failure, gateway rejection and tool outcome apart.
     """
+    if outbound_blocked():
+        return {"http_status": 0, "ok": False, "result": None,
+                "error": f"outbound blocked: {OUTBOUND_BLOCK_ENV} is set"}
     headers = {"Content-Type": "application/json"}
     try:
         headers["Authorization"] = f"Bearer {_approval.gateway_token()}"
@@ -253,6 +274,11 @@ def send_direct_message(user_id: str, text: str) -> dict:
 
     Returns {"sent", "delivery_status", "conversation_ref", "reason", "result"}.
     """
+    if outbound_blocked():
+        return {"sent": False, "delivery_status": "blocked",
+                "conversation_ref": None,
+                "reason": f"outbound blocked: {OUTBOUND_BLOCK_ENV} is set",
+                "result": None}
     conversation_ref, problem = resolve_conversation_ref(user_id)
     if problem is not None:
         # Precondition failure, not a transport error. Do not retry.
@@ -491,6 +517,14 @@ def send_document(user_id: str, path, caption: str = "") -> dict:
         token = _bot_token()
     except ConfigError as e:
         out["reason"] = str(e)
+        return out
+
+    # Last thing before the socket, and after the preconditions, so a blocked
+    # process still exercises "file missing", "file empty" and "no token"
+    # rather than short-circuiting them into one opaque refusal.
+    if outbound_blocked():
+        out["document_status"] = "blocked"
+        out["reason"] = f"outbound blocked: {OUTBOUND_BLOCK_ENV} is set"
         return out
 
     body, content_type = _multipart(

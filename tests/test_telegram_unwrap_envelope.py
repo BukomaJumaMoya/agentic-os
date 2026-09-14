@@ -28,6 +28,11 @@ from pathlib import Path
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
 
+# Blocks outbound delivery for this process (see tests/_no_outbound.py).
+# MUST precede the orchestrator imports below.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _no_outbound  # noqa: E402,F401
+
 from orchestrator.telegram_approval import _unwrap_tool_result  # noqa: E402
 
 _REF = "conv_" + "0" * 32

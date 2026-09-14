@@ -15,13 +15,22 @@ import pytest
 
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+# Audit F-23, again: this suite wrote its ea-* fixtures into the repository's
+# real .approval/ directory and executed the real send path, so running it
+# messaged the operator. MUST precede the orchestrator imports.
+import _state_isolation  # noqa: E402,F401
 
 from orchestrator.external_action import execute_external_action  # noqa: E402
 from orchestrator.approval import record_decision  # noqa: E402
 
 
 def _request_dir() -> Path:
-    return BASE / ".approval"
+    # From the isolation module, never rebuilt from BASE. This function used to
+    # return the repository's real .approval/ and the suite wrote fixtures into
+    # it -- ea-* request files were found sitting beside live approvals.
+    return _state_isolation.APPROVAL_DIR
 
 
 def _clear(request_id: str):
