@@ -8,6 +8,7 @@ evidence/*.md
 # Runtime state: client enquiries, proposals and approval decisions.
 # The *.md rules above missed the .json artifacts entirely (audit S-7).
 .approval/
+.jobs/
 evidence/
 automation/evidence/
 # Coding-agent output: model-generated code written under WORKSPACE_ROOT.
