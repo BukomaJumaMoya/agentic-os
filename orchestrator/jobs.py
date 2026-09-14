@@ -344,6 +344,82 @@ def list_jobs(limit: int = 20) -> list:
     return out[:limit]
 
 
+def resolve_id(prefix: str):
+    """Resolve a short id prefix to exactly one job.
+
+    Typing a full UUID on a phone is miserable, so a prefix is accepted. An
+    ambiguous prefix is REFUSED rather than resolved to the newest match:
+    guessing which job someone meant to cancel is precisely the wrong instinct.
+
+    Returns (job_id, error) with exactly one of them set.
+    """
+    prefix = (prefix or "").strip()
+    if not prefix:
+        return None, "missing_job_id"
+    if not JOBS_DIR.exists():
+        return None, "not_found"
+    if _record_path(prefix).exists():
+        return prefix, None
+    matches = sorted(
+        path.stem for path in JOBS_DIR.glob("*.json")
+        if not path.name.endswith(".json.tmp") and path.stem.startswith(prefix)
+    )
+    if not matches:
+        return None, "not_found"
+    if len(matches) > 1:
+        return None, "ambiguous:" + ",".join(m[:8] for m in matches[:5])
+    return matches[0], None
+
+
+# The runner is referenced by path, not imported: importing it would pull the
+# whole workflow stack into the synchronous command path, which must stay fast
+# and hard to break.
+RUNNER_PATH = Path(__file__).resolve().parent / "job_runner.py"
+
+
+def spawn(job_id: str, workflow: str, inputs: dict, user_id=None) -> dict:
+    """Start the runner detached and return immediately.
+
+    The job record already exists and is queued before this is called, so the
+    acknowledgement can carry a real id and /apr_jobs shows the job at once
+    rather than after the child happens to start.
+
+    stdout and stderr go to a file rather than a pipe: an unread pipe on a
+    detached child fills its buffer and blocks the writer, hanging the workflow
+    partway with nothing to show for it.
+    """
+    import subprocess
+
+    log_dir = _approval.STATE_ROOT / "logs"
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        sink = open(log_dir / "job-runner.log", "a", encoding="utf-8")
+    except Exception:
+        sink = subprocess.DEVNULL
+
+    kwargs = {"stdin": subprocess.PIPE, "stdout": sink, "stderr": sink,
+              "cwd": str(RUNNER_PATH.parent.parent)}
+    if os.name == "nt":
+        # Detach from the console so the child outlives the gateway's handler.
+        kwargs["creationflags"] = 0x00000008 | 0x00000200  # DETACHED | NEW_GROUP
+    else:
+        kwargs["start_new_session"] = True
+
+    try:
+        proc = subprocess.Popen([sys.executable, str(RUNNER_PATH)], **kwargs)
+    except Exception as e:
+        return {"spawned": False, "reason": f"{type(e).__name__}: {e}"}
+
+    payload = json.dumps({"job_id": job_id, "workflow": workflow,
+                          "inputs": inputs, "user_id": user_id})
+    try:
+        proc.stdin.write(payload.encode("utf-8"))
+        proc.stdin.close()
+    except Exception as e:
+        return {"spawned": False, "reason": f"could not send inputs: {e}"}
+    return {"spawned": True, "pid": proc.pid}
+
+
 def cleanup(job_id: str) -> None:
     for path in (_record_path(job_id), _cancel_path(job_id)):
         if path.exists():

@@ -2,14 +2,12 @@ import { defineToolPlugin } from "openclaw/plugin-sdk/tool-plugin";
 import { Type } from "typebox";
 import http from "node:http";
 import { spawn } from "node:child_process";
-import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 // dist/index.js -> plugin root -> tools/ -> repo root
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const TELEGRAM_COMMANDS = path.join(REPO_ROOT, "orchestrator", "telegram_commands.py");
-const ENQUIRY_RUNNER = path.join(REPO_ROOT, "orchestrator", "enquiry_runner.py");
 const PYTHON = process.env.AGENTIC_PYTHON || "python";
 
 /**
@@ -99,6 +97,9 @@ const APPROVAL_COMMANDS = [
   { name: "apr_status",  verb: "STATUS",  acceptsArgs: true,  description: "Show the status of an approval request by id." },
   { name: "apr_resume",  verb: "RESUME",  acceptsArgs: true,  description: "Resume an approved external action by request id." },
   { name: "apr_list",    verb: "LIST",    acceptsArgs: false, description: "List pending approval requests." },
+  { name: "apr_jobs",    verb: "JOBS",    acceptsArgs: true,  description: "List recent workflow jobs and their status." },
+  { name: "apr_cancel",  verb: "CANCEL",  acceptsArgs: true,  description: "Cancel a running job by id (a short prefix is enough)." },
+  { name: "apr_enquiry", verb: "ENQUIRY", acceptsArgs: true,  description: "Draft a proposal for a client enquiry." },
 ];
 
 /**
@@ -137,7 +138,10 @@ function buildApprovalCommand(def) {
       const text = args ? `${def.verb} ${args}` : def.verb;
       try {
         const result = await runTelegramCommand(senderId, text);
-        return { text: JSON.stringify(result, null, 2) };
+        // The bridge returns structured JSON. A few verbs are read by a person
+        // on a phone rather than by a program, so they get a plain reply.
+        const rendered = renderForHumans(def.verb, result);
+        return { text: rendered ?? JSON.stringify(result, null, 2) };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return {
@@ -148,117 +152,74 @@ function buildApprovalCommand(def) {
   };
 }
 
-// Same ceiling as orchestrator/llm.py MAX_ENQUIRY_CHARS. Enforced here so the
-// sender gets an immediate, specific refusal, and again in enquiry_runner.py
-// next to the model call. Refuse, never truncate: silently dropping the tail of
-// an enquiry loses exactly the part the client bothered to explain.
-const MAX_ENQUIRY_CHARS = 8000;
-
 /**
- * Start the flagship workflow and return without waiting for it.
+ * Plain-text replies for the verbs a person reads on a phone.
  *
- * A proposal takes 30s+ (one model call plus up to three specialist
- * subprocesses). A slash-command handler that awaited that would exceed the
- * gateway's handler budget and strand the sender, so the child is detached and
- * unref'd: it outlives this handler, and outlives a gateway restart.
- *
- * stdout and stderr go to a log file rather than a pipe. An unread pipe on a
- * detached child fills its buffer and blocks the writer -- the workflow would
- * hang partway through with no indication why.
+ * Returns null for anything else, so the JSON envelope stays the default and a
+ * new verb is never silently rendered as an empty string.
  */
-function startEnquiryWorkflow(userId, enquiry) {
-  const stateRoot = process.env.AGENTIC_STATE_DIR || REPO_ROOT;
-  const logDir = path.join(stateRoot, "logs");
-  let logFd = "ignore";
-  try {
-    fs.mkdirSync(logDir, { recursive: true });
-    logFd = fs.openSync(path.join(logDir, "enquiry-runner.log"), "a");
-  } catch {
-    // Logging is a convenience; losing it must not stop the run.
+function renderForHumans(verb, result) {
+  if (!result || result.ok === false) {
+    if (verb === "CANCEL" && result && result.outcome) {
+      const explain = {
+        not_found: "No job with that id.",
+        already_finished: "That job already finished (" + result.status + ").",
+        too_late_already_executed:
+          "Too late - the approval was already used by a completed action. " +
+          "That cannot be undone.",
+        ambiguous_job_id:
+          "More than one job starts with that: " +
+          (result.matches || []).join(", ") + ". Send more characters.",
+      }[result.outcome];
+      if (explain) return explain;
+    }
+    if (verb === "ENQUIRY" && result && result.error === "enquiry_too_long") {
+      return (
+        "That enquiry is " + result.length + " characters, above the " +
+        result.limit + " limit." + NEWLINE + NEWLINE +
+        "Refusing rather than truncating, so none of it is silently lost. " +
+        "Send a shorter version."
+      );
+    }
+    return null;
   }
 
-  const proc = spawn(PYTHON, [ENQUIRY_RUNNER], {
-    cwd: REPO_ROOT,
-    detached: true,
-    stdio: ["pipe", logFd, logFd],
-  });
-  proc.on("error", () => { /* reported by the acknowledgement path below */ });
-  proc.stdin.write(JSON.stringify({ user_id: userId, enquiry }));
-  proc.stdin.end();
-  proc.unref();
-  return proc.pid ?? null;
-}
+  if (verb === "JOBS") {
+    const jobs = result.jobs || [];
+    if (!jobs.length) return "No jobs yet.";
+    const lines = jobs.map((j) => {
+      const bits = [j.job + "  " + j.workflow + "  " + j.status + "  " + j.age + " ago"];
+      if (j.at) bits.push("      at " + j.at + (j.cancelling ? " (cancelling)" : ""));
+      if (j.request) bits.push("      request " + j.request);
+      return bits.join(NEWLINE);
+    });
+    const more = result.shown >= result.limit
+      ? NEWLINE + NEWLINE + "Showing the " + result.limit + " most recent."
+      : "";
+    return "Recent jobs:" + NEWLINE + NEWLINE + lines.join(NEWLINE) + more;
+  }
 
-/**
- * /apr_enquiry <text> -- run the flagship workflow on an inbound enquiry.
- *
- * Acknowledges immediately; the approval prompt arrives afterwards by the same
- * path every other proposal uses. Failures are announced by enquiry_runner.py
- * to this same chat, because a dropped enquiry is worse than a visible error.
- */
-function buildEnquiryCommand() {
-  return {
-    name: "apr_enquiry",
-    description: "Draft a proposal for a client enquiry. Takes the enquiry text.",
-    acceptsArgs: true,
-    requireAuth: true,
-    channels: ["telegram"],
-    async handler(ctx) {
-      if (!ctx?.isAuthorizedSender) {
-        return { text: JSON.stringify({ ok: false, error: "not_allowed" }, null, 2) };
-      }
-      const senderId = normalizeSenderId(ctx?.senderId);
-      if (!senderId) {
-        return {
-          text: JSON.stringify({
-            ok: false,
-            error: "no_verified_sender",
-            detail:
-              "The command context carried no senderId; refusing to run a " +
-              "workflow for an unattributed enquiry.",
-          }, null, 2),
-        };
-      }
+  if (verb === "CANCEL" && result.outcome === "cancelling") {
+    return (
+      "Cancelling job " + String(result.job_id).slice(0, 8) + "." +
+      NEWLINE + NEWLINE +
+      "It stops at its next checkpoint; an agent already running is not " +
+      "interrupted, so this can take a minute."
+    );
+  }
 
-      const enquiry = String(ctx?.args ?? "").trim();
-      if (!enquiry) {
-        return {
-          text:
-            "Send the enquiry text with the command, for example:\n" +
-            "/apr_enquiry Brown Optical Limited needs a system to message clients...",
-        };
-      }
-      if (enquiry.length > MAX_ENQUIRY_CHARS) {
-        return {
-          text:
-            `That enquiry is ${enquiry.length} characters, above the ` +
-            `${MAX_ENQUIRY_CHARS} limit.\n\n` +
-            "Refusing rather than truncating, so none of it is silently lost. " +
-            "Send a shorter version.",
-        };
-      }
-
-      try {
-        const pid = startEnquiryWorkflow(senderId, enquiry);
-        const preview = enquiry.length > 80 ? enquiry.slice(0, 80) + "..." : enquiry;
-        return {
-          text:
-            "Working on it.\n\n" +
-            `Enquiry: ${preview}\n` +
-            `Length: ${enquiry.length} characters\n\n` +
-            "Drafting a proposal now — this takes around half a minute. " +
-            "An approval prompt will follow, or a message saying why none came.",
-        };
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        return {
-          text:
-            "Could not start the workflow, so nothing is running.\n\n" +
-            `Error: ${message}`,
-        };
-      }
-    },
-  };
+  if (verb === "ENQUIRY" && result.status === "queued") {
+    return (
+      "Working on it.  Job " + result.short_id + NEWLINE + NEWLINE +
+      "Enquiry: " + result.preview + NEWLINE +
+      "Length: " + result.chars + " characters" + NEWLINE + NEWLINE +
+      "Drafting a proposal now - this takes around half a minute. An approval " +
+      "prompt will follow, or a message saying why none came." +
+      NEWLINE + NEWLINE +
+      "Stop it with:  /apr_cancel " + result.short_id
+    );
+  }
+  return null;
 }
 
 const TELEGRAM_APPROVAL_DESCRIPTION =
@@ -279,6 +240,8 @@ const TELEGRAM_APPROVAL_PARAMETERS = Type.Object({
     maxLength: 500,
   }),
 });
+
+const NEWLINE = "\n";
 
 const DEFAULT_ROUTER_HOST = "127.0.0.1";
 const DEFAULT_ROUTER_PORT = 18790;
@@ -488,7 +451,6 @@ pluginEntry.register = function register(api) {
   const result = baseRegister.call(this, api);
   if (typeof api?.registerCommand === "function") {
     for (const def of APPROVAL_COMMANDS) api.registerCommand(buildApprovalCommand(def));
-    api.registerCommand(buildEnquiryCommand());
   }
   return result;
 };

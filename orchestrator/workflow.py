@@ -187,6 +187,24 @@ def run(name: str, inputs: dict, **options) -> dict:
         return _envelope("invalid_input", name,
                          error="; ".join(violations), violations=violations)
 
+    if options.pop("dry_run", False):
+        # Answers "what would this do" without spending anything. Stops after
+        # validation and declaration, before the first agent and before any
+        # model call -- so it costs nothing and cannot send. Deliberately does
+        # NOT run classification: that is the workflow's own code, and running
+        # half of a workflow to preview it is how a dry run stops being dry.
+        return _envelope("dry_run", name,
+                         would_invoke=list(workflow.agents),
+                         would_produce=workflow.artifact,
+                         requires_approval=workflow.requires_approval,
+                         max_runtime_seconds=workflow.max_runtime_seconds,
+                         inputs_accepted=sorted(
+                             k for k in inputs if k in
+                             (workflow.input_schema.get("properties") or {})),
+                         inputs_ignored=sorted(
+                             k for k in inputs if k not in
+                             (workflow.input_schema.get("properties") or {})))
+
     result = workflow.run(inputs, **options)
     if not isinstance(result, dict):
         return _envelope("invalid_workflow_result", name,

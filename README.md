@@ -11,7 +11,7 @@ an approval gate.
 ## What actually happens
 
 ```
- Telegram  ──▶  OpenClaw gateway  ──▶  /apr_enquiry  ──▶  enquiry_runner (detached)
+ Telegram  ──▶  OpenClaw gateway  ──▶  /apr_enquiry  ──▶  job_runner (detached, tracked)
                                                                │
                               ┌────────────────────────────────┤
                               ▼                ▼               ▼
@@ -50,6 +50,8 @@ against the configured user id.
 | `/apr_approve <id>` | Approve. This is what permits an external action. |
 | `/apr_reject <id>` | Reject. |
 | `/apr_resume <id>` | Run the external action for an already-approved request. |
+| `/apr_jobs` | Recent workflow jobs: id, status, age, and the current checkpoint. |
+| `/apr_cancel <id>` | Stop a running job. A short id prefix is enough. |
 
 `/apr_list` and `/apr_status` return identifiers only. They deliberately do not
 return the proposal body, the evidence block, or research content — a listing
@@ -236,7 +238,7 @@ Known open items:
 ```
 agents/         research (Tavily), projects (ClickUp), coding (feasibility)
 orchestrator/   llm (provider chain), proposal, research_query, flagship,
-                approval, telegram_approval, telegram_commands, enquiry_runner,
+                approval, telegram_approval, telegram_commands, jobs, job_runner,
                 external_action, proposal_pdf
 tools/          OpenClaw plugin registering the /apr_* slash commands
 config/         juma.json — identity, services, rates. No credentials.

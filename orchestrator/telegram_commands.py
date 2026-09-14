@@ -21,6 +21,7 @@ Security:
 """
 
 import json
+from datetime import datetime, timezone
 import sys
 from pathlib import Path
 
@@ -35,6 +36,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from orchestrator import approval as _approval  # noqa: E402
+from orchestrator import jobs as _jobs  # noqa: E402
 
 ConfigError = _approval.ConfigError
 BASE = _approval.BASE
@@ -50,6 +52,54 @@ def _decision_path(request_id: str) -> Path:
 
 def _request_path(request_id: str) -> Path:
     return _approval.request_path(request_id)
+
+
+# A chat reply nobody can scroll is a reply nobody reads.
+MAX_JOBS_LISTED = 10
+# Same ceiling as orchestrator/llm.py MAX_ENQUIRY_CHARS.
+MAX_ENQUIRY_CHARS = 8000
+
+
+def _age(iso_time):
+    """Human-readable age, so a listing does not carry raw timestamps."""
+    if not iso_time:
+        return "-"
+    try:
+        then = datetime.fromisoformat(str(iso_time))
+        if then.tzinfo is None:
+            then = then.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return "-"
+    seconds = int((datetime.now(timezone.utc) - then).total_seconds())
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m"
+    if seconds < 86400:
+        return f"{seconds // 3600}h"
+    return f"{seconds // 86400}d"
+
+
+def _job_summary(entry):
+    """One job, reduced to what a chat reply should carry.
+
+    Identifiers, status and the last checkpoint. Never the enquiry, never the
+    proposal, never the evidence -- the same rule that keeps /apr_list from
+    dumping a 30 KB proposal into a chat window.
+    """
+    out = {
+        "job": (entry.get("job_id") or "")[:8],
+        "workflow": entry.get("workflow"),
+        "status": entry.get("status"),
+        "age": _age(entry.get("created_at")),
+    }
+    if entry.get("status") == "running":
+        out["at"] = entry.get("last_step")
+        if entry.get("cancel_requested"):
+            out["cancelling"] = True
+    if entry.get("request_id"):
+        out["request"] = entry["request_id"][:8]
+    return out
 
 
 def _approval_state(request_id):
@@ -205,6 +255,70 @@ def handle_telegram_command(user_id: str, text: str) -> dict:
     if command == "LIST":
         return {"ok": True, "pending": _list_pending()}
 
+    if command == "JOBS":
+        # Summary only, same discipline as LIST: identifiers and progress, never
+        # inputs, bodies or evidence. Capped so a long history cannot flood the
+        # chat -- a reply nobody can scroll is a reply nobody reads.
+        limit = MAX_JOBS_LISTED
+        if request_id and request_id.isdigit():
+            limit = max(1, min(int(request_id), MAX_JOBS_LISTED))
+        listed = _jobs.list_jobs(limit=limit)
+        return {"ok": True, "jobs": [_job_summary(j) for j in listed],
+                "shown": len(listed), "limit": limit}
+
+    if command == "CANCEL":
+        if not request_id:
+            return {"ok": False, "error": "missing_job_id",
+                    "example": "CANCEL <job_id>"}
+        job_id, problem = _jobs.resolve_id(request_id)
+        if problem == "not_found":
+            return {"ok": False, "outcome": "not_found", "job_id": request_id}
+        if problem and problem.startswith("ambiguous:"):
+            # Refuse rather than guess which job was meant.
+            return {"ok": False, "outcome": "ambiguous_job_id",
+                    "job_id": request_id,
+                    "matches": problem.split(":", 1)[1].split(","),
+                    "detail": "more than one job starts with that prefix; "
+                              "send more characters"}
+        if problem:
+            return {"ok": False, "outcome": problem, "job_id": request_id}
+        return _jobs.request_cancel(job_id)
+
+    if command == "ENQUIRY":
+        # Everything after the verb is the enquiry text.
+        enquiry = (trimmed.split(maxsplit=1)[1] if len(trimmed.split(maxsplit=1)) > 1
+                   else "").strip()
+        if not enquiry:
+            return {"ok": False, "error": "missing_enquiry",
+                    "example": "ENQUIRY <the client's message>"}
+        if len(enquiry) > MAX_ENQUIRY_CHARS:
+            # Refuse, never truncate: the tail is the part the client bothered
+            # to explain.
+            return {"ok": False, "error": "enquiry_too_long",
+                    "length": len(enquiry), "limit": MAX_ENQUIRY_CHARS,
+                    "detail": "refusing rather than truncating; send a shorter "
+                              "version and nothing is lost"}
+        definition = None
+        try:
+            from orchestrator import workflow as _workflow
+            definition = _workflow.get("proposal")
+        except Exception:
+            definition = None
+        job = _jobs.create(
+            "proposal", {"enquiry": enquiry}, requested_by=user_id,
+            max_runtime_seconds=getattr(definition, "max_runtime_seconds", None))
+        spawned = _jobs.spawn(job["job_id"], "proposal", {"enquiry": enquiry},
+                              user_id=user_id)
+        if not spawned.get("spawned"):
+            _jobs.finish(job["job_id"], _jobs.FAILED,
+                         error=spawned.get("reason", "spawn failed"))
+            return {"ok": False, "error": "spawn_failed",
+                    "job_id": job["job_id"], "detail": spawned.get("reason")}
+        return {"ok": True, "status": "queued", "job_id": job["job_id"],
+                "short_id": job["job_id"][:8],
+                "preview": job["inputs_preview"],
+                "chars": len(enquiry)}
+
     if command == "RESUME":
         if not request_id:
             return {"ok": False, "error": "missing_request_id", "example": "RESUME <request_id>"}
@@ -214,7 +328,9 @@ def handle_telegram_command(user_id: str, text: str) -> dict:
             return {"ok": True, "status": "ready", "request_id": request_id, "resume": resume}
         return {"ok": True, "status": "not_ready", "request_id": request_id, "resume": resume}
 
-    return {"ok": False, "error": "unknown_command", "supported": ["APPROVE", "REJECT", "STATUS", "LIST", "RESUME"]}
+    return {"ok": False, "error": "unknown_command",
+            "supported": ["APPROVE", "REJECT", "STATUS", "LIST", "RESUME",
+                          "JOBS", "CANCEL", "ENQUIRY"]}
 
 
 def main():
