@@ -40,18 +40,33 @@ SANDBOXING
 Pi's bash tool is unrestricted by default. Two modes, and which one was used is
 always reported:
 
-  docker  -- Pi runs in a container with the project bind-mounted at /work and
-             the vendored Pi install mounted read-only. Its bash sees the
-             project and nothing else.
+  docker  -- Pi runs inside juma-pi-sandbox, with the project bind-mounted at
+             /work and every .env in it blanked by a mount. Its bash sees the
+             project and nothing else. Pi itself lives in the image rather than
+             being mounted, because the token-reduction tools have to be set up
+             at build time.
 
   host    -- Pi runs directly, with a scrubbed environment: PATH, a temp dir,
-             its own OPENROUTER_API_KEY, and nothing else. Every other variable
-             the parent held is dropped, so the ClickUp token, the Telegram bot
+             its own provider key, and nothing else. Every other variable the
+             parent held is dropped, so the ClickUp token, the Telegram bot
              token and the Tavily key are not merely unused but absent.
 
 Host mode is a real reduction in containment, not an equivalent alternative,
 and the tool result says so in words rather than leaving the caller to infer it
-from a flag.
+from a flag. It also cannot mask .env files -- masking is implemented with bind
+mounts -- so it refuses a project that contains any, unless explicitly allowed.
+
+TOKEN REDUCTION
+---------------
+The image carries two third-party tools that only ever run inside it, both
+pinned:
+
+  RTK       rewrites shell commands so their output costs fewer tokens
+  Ponytail  a ruleset that pushes the model to write less code
+
+Neither is given to Hermes. Hermes has no shell, so RTK would have nothing to
+compress, and Ponytail injects its ruleset every turn, which would ADD tokens
+to an orchestrator that is already the expensive part of the system.
 """
 
 from __future__ import annotations
@@ -92,7 +107,13 @@ VENDOR = HERE / "vendor"
 SELF_ROOT = HERE.parent.parent
 PI_CLI = VENDOR / "node_modules" / "@earendil-works" / "pi-coding-agent" / "dist" / "bundle" / "cli.js"
 
-DOCKER_IMAGE = "juma-pi-sandbox:1"
+DOCKER_IMAGE = "juma-pi-sandbox:2"
+
+# Pi now lives IN the sandbox image rather than being bind-mounted from
+# agents/coding/vendor, because the two token-reduction tools have to be
+# initialised at image build time and a read-only mount cannot be initialised.
+# The vendor install is still what host mode runs.
+PI_IN_IMAGE = "pi"
 
 # Branches the agent will never commit onto, whatever it is told.
 PROTECTED_BRANCHES = {"main", "master", "develop", "release", "production", "prod"}
@@ -212,7 +233,27 @@ def observe_changes(project: Path, baseline: str) -> dict:
 
     diff_stat = git(project, "diff", "--stat", baseline, check=False).stdout.strip()
 
+    # `git diff` only knows about tracked files, so a task whose whole output is
+    # a NEW file reports zero insertions -- which made the A/B measurement read
+    # "0 lines changed" for a run that had just written a working script. Count
+    # the untracked files directly.
+    untracked_lines = 0
+    for entry in changed:
+        if entry["state"] != "added (untracked)":
+            continue
+        try:
+            path = project / entry["path"]
+            if path.is_file():
+                lines = len(path.read_text(encoding="utf-8",
+                                           errors="replace").splitlines())
+                entry["lines"] = lines
+                untracked_lines += lines
+        except OSError:
+            pass
+
     return {
+        "untracked_lines": untracked_lines,
+        "lines_added_total": insertions + untracked_lines,
         "changed_files": changed,
         "changed_file_count": len(changed),
         "insertions": insertions,
@@ -343,9 +384,16 @@ def scrubbed_env(api_key: str, key_var: str = "GROQ_API_KEY") -> dict[str, str]:
 
 
 def run_pi(job: Job, project: Path, instruction: str, model: str,
-           provider: str, api_key: str, key_var: str, mode: str, audit) -> dict:
+           provider: str, api_key: str, key_var: str, mode: str, audit,
+           token_tools: bool = True) -> dict:
     """Drive Pi over its RPC protocol (strict LF-delimited JSONL)."""
     prompt = f"{PREAMBLE}\n\nTASK\n{guard.instruction_block(instruction)}"
+
+    # RTK (shell-output compression) and Ponytail (write-less-code ruleset) are
+    # a Pi extension and a Pi package, both installed into the image. Turning
+    # them off is how the A/B measurement is taken, and how a task can still
+    # run unmodified if either ever misbehaves.
+    token_tool_flags: list[str] = [] if token_tools else ["--no-extensions", "--no-skills"]
 
     masked: list[str] = []
     if mode == "docker":
@@ -357,17 +405,20 @@ def run_pi(job: Job, project: Path, instruction: str, model: str,
             "docker", "run", "--rm", "-i",
             # The project is the only writable thing in the container.
             "-v", f"{project}:/work",
-            "-v", f"{VENDOR}:/pi:ro",
             *mask_flags,
             "-w", "/work",
             "-e", key_var,
             "-e", "AI_AGENT=pi",
+            # Belt and braces: the image already sets this, but a sandbox
+            # should not depend on an ENV line surviving a future rebuild.
+            "-e", "RTK_TELEMETRY_DISABLED=1",
             # No host network, no extra mounts, no privileged flags.
             "--network", "bridge",
             DOCKER_IMAGE,
-            "node", "/pi/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js",
+            PI_IN_IMAGE,
             "--mode", "rpc", "--no-session",
             "--provider", provider, "--model", model,
+            *token_tool_flags,
         ]
         env = {**os.environ, key_var: api_key}
         cwd = str(project)
@@ -378,6 +429,7 @@ def run_pi(job: Job, project: Path, instruction: str, model: str,
         command = [
             "node", str(PI_CLI), "--mode", "rpc", "--no-session",
             "--provider", provider, "--model", model,
+            *token_tool_flags,
         ]
         env = scrubbed_env(api_key, key_var)
         cwd = str(project)
@@ -393,6 +445,7 @@ def run_pi(job: Job, project: Path, instruction: str, model: str,
 
     transcript: list[str] = []
     tools_used: list[str] = []
+    usage: dict[str, int] = {}
     deadline = time.time() + EXECUTOR_TIMEOUT
     settled = False
 
@@ -423,7 +476,19 @@ def run_pi(job: Job, project: Path, instruction: str, model: str,
                 except json.JSONDecodeError:
                     continue
                 kind = event.get("type")
-                if kind == "agent_settled":
+                _accumulate_usage(event, usage)
+                if kind == "extension_ui_request":
+                    # An extension asked the "user" something. Nobody is here.
+                    #
+                    # notify/setStatus are fire-and-forget, but the dialog
+                    # methods (select/confirm/input/editor) BLOCK until the
+                    # client answers on stdin, so a client that ignores them
+                    # stalls the agent with no error and no output -- which is
+                    # exactly what happened when Ponytail was first enabled.
+                    #
+                    # Unattended, the safe answer to "may I?" is no.
+                    _answer_extension_ui(process, event, audit)
+                elif kind == "agent_settled":
                     settled = True
                 elif kind == "tool_execution_start":
                     name = event.get("toolName") or event.get("tool") or "tool"
@@ -464,11 +529,16 @@ def run_pi(job: Job, project: Path, instruction: str, model: str,
         "executor": "pi",
         "sandbox": mode,
         "provider": provider,
+        "token_tools": token_tools,
         "masked_env_files": masked,
         "masked_env_file_count": len(masked),
         "model": model,
         "tool_calls": len(tools_used),
         "tools_used": sorted(set(tools_used)),
+        "input_tokens": usage.get("input_tokens"),
+        "output_tokens": usage.get("output_tokens"),
+        "cache_read_tokens": usage.get("cache_read_tokens"),
+        "model_calls": usage.get("model_calls"),
         "timed_out": timed_out,
         # The model's own words. Kept separate from the observed diff on
         # purpose: it is testimony, not evidence.
@@ -476,8 +546,88 @@ def run_pi(job: Job, project: Path, instruction: str, model: str,
     }
 
 
+# Extension UI methods that expect no reply. Anything else that arrives as an
+# extension_ui_request is a dialog and blocks until answered.
+_FIRE_AND_FORGET_UI = {"notify", "setStatus", "setWidget", "setTitle",
+                       "set_editor_text", "setEditorText"}
+
+
+def _answer_extension_ui(process, event: dict, audit) -> None:
+    """Decline an extension's dialog so the agent does not wait for a human."""
+    method = event.get("method")
+    if method in _FIRE_AND_FORGET_UI:
+        return
+
+    reply: dict[str, Any] = {"type": "extension_ui_response", "id": event.get("id")}
+    if method == "confirm":
+        reply["confirmed"] = False
+    elif method == "select":
+        reply["cancelled"] = True
+    elif method in ("input", "editor"):
+        reply["cancelled"] = True
+    else:
+        reply["cancelled"] = True
+
+    if audit:
+        audit.write("extension_ui_declined", method=method,
+                    title=str(event.get("title") or "")[:200])
+    try:
+        process.stdin.write(json.dumps(reply) + "\n")
+        process.stdin.flush()
+    except Exception:
+        # The child is gone; the read loop will notice on its next read.
+        pass
+
+
+def _accumulate_usage(event: dict, usage: dict) -> None:
+    """Pull token counts out of whatever Pi event carries them.
+
+    Pi reports usage on several event types and the field names vary by
+    upstream provider, so this looks for the shapes rather than assuming one.
+    Totals are MAX-ed, not summed, where Pi reports cumulative session figures:
+    summing a running total once per event would multiply it by the number of
+    events.
+    """
+    # One completed assistant message is one model call, and its usage block is
+    # that call's own cost, not a running total -- so these are SUMMED. Taking
+    # a max instead under-reports any task that takes more than one call, which
+    # is every task that uses a tool.
+    if event.get("type") != "message_end":
+        return
+    message = event.get("message")
+    if not isinstance(message, dict) or message.get("role") != "assistant":
+        return
+    block = message.get("usage")
+    if not isinstance(block, dict):
+        return
+
+    for name, target in (("input", "input_tokens"), ("prompt", "input_tokens"),
+                         ("output", "output_tokens"), ("completion", "output_tokens")):
+        for field in (name, f"{name}_tokens", f"{name}Tokens"):
+            value = block.get(field)
+            if isinstance(value, (int, float)) and value >= 0:
+                usage[target] = usage.get(target, 0) + int(value)
+                break
+    for field in ("cacheRead", "cache_read"):
+        value = block.get(field)
+        if isinstance(value, (int, float)):
+            usage["cache_read_tokens"] = usage.get("cache_read_tokens", 0) + int(value)
+            break
+    usage["model_calls"] = usage.get("model_calls", 0) + 1
+
+
 def _text_of(event: dict) -> str:
+    """Assistant prose only.
+
+    message_end fires for every role, including the system prompt and the echo
+    of the user's own message. Without the role check the "agent report" filled
+    up with this agent's own PREAMBLE, and -- worse -- a run in which the model
+    did nothing at all still looked like it had produced output, so a failed
+    task was reported as a success.
+    """
     message = event.get("message") or {}
+    if message.get("role") != "assistant":
+        return ""
     content = message.get("content")
     if isinstance(content, str):
         return content.strip()
@@ -554,7 +704,7 @@ def main() -> None:
             required=[],
             optional=["GROQ_API_KEY", "OPENROUTER_API_KEY", "CODING_ROOT",
                       "CODING_SANDBOX", "CODING_ALLOW_UNMASKED_ENV",
-                      "CODING_PROVIDER"],
+                      "CODING_PROVIDER", "CODING_TOKEN_TOOLS"],
             default_model="openai/gpt-oss-120b",
             # This agent does not call a model itself. Pi does, with its own
             # copy of the key; there is no LLM client in this process.
@@ -595,9 +745,16 @@ def main() -> None:
     allow_unmasked_env = (boot.config.get("CODING_ALLOW_UNMASKED_ENV") or "")\
         .strip().lower() in ("1", "true", "yes", "on")
 
+    # Default on. Set CODING_TOKEN_TOOLS=off to run Pi without RTK/Ponytail;
+    # start_code_task can also override it per task, which is how the A/B
+    # measurement is taken.
+    token_tools_default = (boot.config.get("CODING_TOKEN_TOOLS") or "on")\
+        .strip().lower() not in ("0", "false", "no", "off")
+
     boot.audit.write("coding_config", dev_root=str(dev_root), model=model,
                      allow_unmasked_env=allow_unmasked_env,
                      sandbox=sandbox_mode, provider=pi_provider,
+                     token_tools=token_tools_default,
                      pi_installed=PI_CLI.exists(),
                      agy_installed=bool(shutil.which("agy")))
 
@@ -612,7 +769,10 @@ def main() -> None:
         ),
     )
     def start_code_task(project_path: str, instruction: str,
-                        kind: str = "backend") -> dict:
+                        kind: str = "backend",
+                        token_tools: bool | None = None) -> dict:
+        use_token_tools = token_tools_default if token_tools is None else bool(token_tools)
+
         kind = str(kind or "backend").strip().lower()
         if kind not in KINDS:
             raise AgentError("bad_input", f"kind must be one of {sorted(KINDS)}")
@@ -673,7 +833,8 @@ def main() -> None:
             else:
                 outcome = run_pi(job, project, instruction, model,
                                  pi_provider, pi_key, pi_key_var,
-                                 sandbox_mode, boot.audit)
+                                 sandbox_mode, boot.audit,
+                                 token_tools=use_token_tools)
 
             observed = observe_changes(project, baseline)
             final_branch = current_branch(project)
@@ -696,6 +857,7 @@ def main() -> None:
         return ok(job_id=job.id, kind=kind, branch=branch,
                   project_path=str(project), project_created=created,
                   sandbox=sandbox_mode if kind == "backend" else "host",
+                  token_tools=use_token_tools,
                   detail=("Started. Poll get_status with this job_id, then "
                           "read get_result."),
                   agent=AGENT, version=VERSION)

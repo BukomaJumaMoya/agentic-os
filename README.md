@@ -52,6 +52,59 @@ model is capped at 8,000 tokens per minute. The two Groq models with a higher
 cap refuse tool calling outright, which is the only thing an orchestrator does.
 The arithmetic and the measurements are in `hermes/configure_providers.py`.
 
+## Token reduction in the coding sandbox
+
+Two third-party tools run inside `juma-pi-sandbox`, and nowhere else. Both are
+pinned, because they are code executing inside a confinement boundary with a
+model driving them — `latest` would let the sandbox change under a rebuild.
+
+| tool | pinned to | what it does |
+|---|---|---|
+| [RTK](https://github.com/rtk-ai/rtk) | `v0.49.0` | rewrites shell commands so their output costs fewer tokens |
+| [Ponytail](https://github.com/DietrichGebert/ponytail) | commit `e3ba2aa` (v4.10.0) | a ruleset pushing the model to write less code |
+| Pi | `0.86.1` | the coding agent itself |
+
+`v0.49.0` is RTK's newest **non**-prerelease; every tag after it is a
+`dev-0.50.0-rc`. The release tarball is checksum-verified at build time against
+the `checksums.txt` published with the same tag.
+
+Telemetry is off twice over: RTK's is opt-in and never consented to, and
+`RTK_TELEMETRY_DISABLED=1` is set as an image ENV and passed again at run time.
+Verified in the container: `env override: RTK_TELEMETRY_DISABLED=1 (blocked)`.
+
+All state stays inside the container — RTK's Pi extension at
+`/home/agent/.pi/agent/extensions/rtk.ts`, its runtime data in `/tmp/rtk`,
+Ponytail under `/home/agent/.pi/agent/git/…`. A run with the project mounted
+confirmed nothing is written to the mounted path.
+
+Neither tool goes anywhere near Hermes. Hermes has no shell, so RTK would have
+nothing to compress, and Ponytail injects its ruleset every turn — which would
+*add* tokens to the one component already constrained by them.
+
+### Measured, on one small task
+
+`agents/.venv/Scripts/python tests/measure_token_tools.py`
+
+| arm | input | output | model calls | lines written | passed |
+|---|---|---|---|---|---|
+| RTK + Ponytail | 3,799 | 287 | 2 | 12 | yes |
+| baseline | 1,381 | 262 | 5 | 18 | yes |
+
+On a task this small the tools **cost** tokens rather than saving them:
+Ponytail's skill catalogue is a fixed ~2.4k-token addition to the system
+prompt, which a trivial task cannot amortise, and RTK only pays off when a
+command produces bulky output — this one produced almost none. What they did
+deliver is a third less code (12 lines vs 18) in fewer round trips.
+
+One run per arm; indicative, not a benchmark. Order matters more than it should:
+Groq's free tier is 8,000 tokens per minute, and whichever arm runs second
+inside one window returns an empty completion. That artifact initially looked
+exactly like the tools breaking the agent, which is why the harness now reports
+a zero-token arm as INCONCLUSIVE rather than as a failure.
+
+Set `CODING_TOKEN_TOOLS=off` in `agents/coding/.env`, or pass
+`token_tools: false` to `start_code_task`, to run without them.
+
 ## Layout
 
 ```
