@@ -15,3 +15,20 @@
 # machine without it produces a proposal with no PDF attached rather than no
 # proposal.
 fpdf2==2.8.8
+
+# ---------------------------------------------------------------------------
+# Agent MCP servers (agents/_common + agents/*).
+#
+# The official Model Context Protocol SDK. Each agent is a standalone MCP
+# server over stdio that Hermes spawns as a subprocess; this is the server
+# half of that protocol.
+#
+# Note on the name: the class this scaffold builds on is FastMCP, which the
+# SDK renamed to MCPServer in 2.x. agents/_common/server.py imports MCPServer
+# and aliases it back to FastMCP, so a version bump across that rename is a
+# one-line change in one file.
+#
+# Installed into agents/.venv (gitignored), not the system interpreter, so the
+# Hermes config can point at one absolute python.exe that cannot be changed out
+# from under the agents by an unrelated pip install.
+mcp>=2.0,<3

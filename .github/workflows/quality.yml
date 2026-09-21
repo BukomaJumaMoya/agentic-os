@@ -61,16 +61,17 @@ jobs:
       - name: Syntax checks
         run: |
           set -euo pipefail
+          python -m py_compile agents/_common/*.py
           python -m py_compile agents/research/main.py
+          python -m py_compile agents/pm/main.py
           python -m py_compile agents/coding/main.py
-          python -m py_compile orchestrator/orchestrator.py
-          python -m py_compile orchestrator/approval.py
-          python -m py_compile orchestrator/flagship.py
-          python -m py_compile tests/test_step6_approval.py
-          python -m py_compile tests/test_step7_flagship_unit.py
-          python -m py_compile tests/test_step7_flagship_e2e.py
-          python -m py_compile tests/test_step7_flagship_failures.py
-          node --check agents/projects/main.js
+          python -m py_compile hermes/apply_approval_patch.py
+          python -m py_compile hermes/configure_orchestrator.py
+          python -m py_compile tests/mcp_client.py
+          python -m py_compile tests/test_common_scaffold.py
+          python -m py_compile tests/test_research_agent.py
+          python -m py_compile tests/test_pm_agent.py
+          python -m py_compile tests/test_coding_agent.py
           node --check automation/clickup.js
           if command -v pwsh >/dev/null 2>&1; then
             pwsh -NoProfile -Command "\$errors = \$null; \$null = [System.Management.Automation.Language.Parser]::ParseFile('automation/generate-proposal.ps1', [ref]\$null, [ref]\$errors); if (\$errors) { foreach (\$e in \$errors) { Write-Error \$e }; exit 1 } else { Write-Host 'OK' }"
@@ -81,49 +82,34 @@ jobs:
       - name: Install Python dependencies
         run: |
           set -euo pipefail
-          # The repository had none until proposals gained PDF rendering.
-          # Only orchestrator/proposal_pdf.py needs these, and it imports them
-          # lazily, so everything else still runs without them -- but the PDF
-          # suite does not, so CI installs them.
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
-      - name: Approval boundary tests
+      # The scaffold tests are the load-bearing ones: env scrubbing, secret
+      # redaction, path confinement and the untrusted-content boundary. They
+      # need no credentials and no network, so they run on every push.
+      - name: Shared scaffold tests
         run: |
           set -euo pipefail
-          PYTHONPATH=. python tests/test_step6_approval.py
+          python tests/test_common_scaffold.py
 
-      - name: Flagship unit tests
+      # Each agent is exercised over real MCP stdio. The --live paths are
+      # omitted deliberately: they spend provider credits and, for the PM
+      # agent, would touch a real ClickUp workspace.
+      - name: Research agent tests (offline)
         run: |
           set -euo pipefail
-          PYTHONPATH=. python tests/test_step7_flagship_unit.py
+          python tests/test_research_agent.py
 
-      - name: Flagship end-to-end tests
+      - name: PM agent tests (offline)
         run: |
           set -euo pipefail
-          PYTHONPATH=. python tests/test_step7_flagship_e2e.py
+          python tests/test_pm_agent.py
 
-      - name: Flagship failure-injection tests
+      - name: Coding agent tests (offline)
         run: |
           set -euo pipefail
-          PYTHONPATH=. python tests/test_step7_flagship_failures.py
-
-      - name: Integration tests (safe subset)
-        env:
-          # Prevent accidental external sends by default
-          APPROVAL_MODE: 'true'
-        run: |
-          set -euo pipefail
-          PYTHONPATH=. python tests/test_step7_flagship_integration.py
-
-      - name: Agent and document tests
-        run: |
-          set -euo pipefail
-          PYTHONPATH=. python tests/test_p0_1_workspace_confinement.py
-          PYTHONPATH=. python tests/test_research_agent.py
-          PYTHONPATH=. python tests/test_coding_agent.py
-          PYTHONPATH=. python tests/test_proposal_pdf.py
-          node tests/test_projects_agent.js
+          python tests/test_coding_agent.py
 
       - name: Documentation consistency check
         run: |
@@ -133,7 +119,10 @@ jobs:
             # this project has not used for a long time -- it asserted a fact
             # that had stopped being true and warned about its own staleness.
             # Check for the things the README must not lose instead.
-            for needle in 'GROQ_API_KEY' 'apr_enquiry' 'approval'; do
+            # Updated for the Hermes rebuild: the orchestrator is Hermes and
+            # the work happens in three MCP agents. GROQ_API_KEY and
+            # apr_enquiry belonged to the archived pipeline.
+            for needle in 'mcp' 'research' 'agents/_common'; do
               if ! grep -qi "$needle" README.md; then
                 echo "::warning::README no longer documents $needle"
               fi

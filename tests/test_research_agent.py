@@ -1,279 +1,190 @@
 #!/usr/bin/env python3
-"""
-Research agent — offline tests.
+"""Research agent, exercised over real MCP stdio.
 
-Every test replaces research._post, the module's single HTTP boundary. Nothing
-here reaches Tavily or needs TAVILY_API_KEY, so the suite is safe for CI and
-costs no search credits. Everything above the boundary runs for real: payload
-construction, result filtering, content capping and outcome classification.
+Run: agents/.venv/Scripts/python tests/test_research_agent.py
+Add --live to include the two tests that spend a Tavily credit and a model call.
+
+The offline tests are the ones that matter for containment; the live ones prove
+the thing actually works end to end.
 """
 
-import importlib.util
-import json
+from __future__ import annotations
+
 import os
+import subprocess
 import sys
-import urllib.error
 from pathlib import Path
 
-BASE = Path(__file__).resolve().parent.parent
+REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO / "tests"))
+sys.path.insert(0, str(REPO / "agents"))
 
-# The agent is a standalone script, not a package module.
-_spec = importlib.util.spec_from_file_location(
-    "research_agent", BASE / "agents" / "research" / "main.py")
-research = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(research)
+from mcp_client import MCPStdioClient  # noqa: E402
 
-passed = 0
+PY = str(REPO / "agents" / ".venv" / "Scripts" / "python.exe")
+AGENT = str(REPO / "agents" / "research" / "main.py")
 
-
-def ok(name):
-    global passed
-    passed += 1
-    print(f"PASS: {name}")
+PASSED: list[str] = []
+FAILED: list[str] = []
 
 
-class _Post:
-    """Replace research._post for one test."""
-
-    def __init__(self, status=200, body=None, raises=None):
-        self.status = status
-        self.body = body
-        self.raises = raises
-        self.calls = []
-        self._real = None
-
-    def __enter__(self):
-        self._real = research._post
-
-        def fake(url, headers, payload, timeout):
-            self.calls.append({"url": url, "headers": headers,
-                               "payload": payload, "timeout": timeout})
-            if self.raises is not None:
-                raise self.raises
-            return self.status, self.body
-
-        research._post = fake
-        return self
-
-    def __exit__(self, *exc):
-        research._post = self._real
-        return False
+def check(name: str, condition: bool, detail: str = "") -> None:
+    (PASSED if condition else FAILED).append(name if condition else f"{name}: {detail}")
 
 
-class _Key:
-    """Set or clear TAVILY_API_KEY for one test."""
+def test_server_starts_and_declares_one_tool() -> None:
+    with MCPStdioClient([PY, AGENT]) as client:
+        tools = client.list_tools()
+    names = sorted(t["name"] for t in tools)
+    check("server completes the MCP handshake", True)
+    check("declares exactly the research tool", names == ["research"], str(names))
 
-    def __init__(self, value="tvly-test-key-not-real"):
-        self.value = value
-        self._saved = None
-
-    def __enter__(self):
-        self._saved = os.environ.pop("TAVILY_API_KEY", None)
-        if self.value:
-            os.environ["TAVILY_API_KEY"] = self.value
-        return self
-
-    def __exit__(self, *exc):
-        os.environ.pop("TAVILY_API_KEY", None)
-        if self._saved is not None:
-            os.environ["TAVILY_API_KEY"] = self._saved
-        return False
+    tool = tools[0]
+    schema = tool.get("inputSchema", {})
+    props = set((schema.get("properties") or {}).keys())
+    check("research takes question and depth", props == {"question", "depth"}, str(props))
+    check("description says it is read-only",
+          "read-only" in (tool.get("description") or "").lower(),
+          tool.get("description", ""))
 
 
-def _body(results, **extra):
-    d = {"query": "q", "results": results, "response_time": 0.5}
-    d.update(extra)
-    return d
+def test_bad_input_is_structured_not_a_crash() -> None:
+    with MCPStdioClient([PY, AGENT]) as client:
+        empty = client.call("research", {"question": "  ", "depth": "quick"})
+        check("empty question is rejected", empty.get("ok") is False, str(empty))
+        check("empty question uses a stable code",
+              empty.get("error") == "bad_input", str(empty))
+
+        bad_depth = client.call("research", {"question": "x", "depth": "exhaustive"})
+        check("unknown depth is rejected", bad_depth.get("ok") is False, str(bad_depth))
+        check("unknown depth names the valid values",
+              "quick" in bad_depth.get("detail", ""), str(bad_depth))
+
+        long_q = client.call("research", {"question": "x" * 5000, "depth": "quick"})
+        check("over-long question is rejected", long_q.get("ok") is False, str(long_q))
+
+        for result in (empty, bad_depth, long_q):
+            check("no traceback in error", "Traceback" not in str(result), str(result))
 
 
-def _result(url="https://example.com/a", content="extracted text", **extra):
-    d = {"title": "A page", "url": url, "content": content, "score": 0.9}
-    d.update(extra)
-    return d
+def test_no_secrets_and_no_stray_stdout() -> None:
+    with MCPStdioClient([PY, AGENT]) as client:
+        client.list_tools()
+        result = client.call("research", {"question": "", "depth": "quick"})
+        stderr = client.stderr
+    check("startup writes nothing secret to stderr",
+          "sk-or-v1-" not in stderr and "tvly-" not in stderr,
+          "a key appeared in stderr")
+    check("stdout stayed valid JSON-RPC", isinstance(result, dict))
 
 
-def test_complete_returns_results():
-    with _Key(), _Post(200, _body([_result(), _result(url="https://example.com/b")])) as p:
-        results, meta = research.search_web("opticians", 3)
-    assert meta["outcome"] == "complete", meta
-    assert meta["results_seen"] == 2
-    assert meta["provider"] == "tavily"
-    assert len(results) == 2
-    assert results[0]["url"] == "https://example.com/a"
-    assert p.calls[0]["url"] == research.API_URL
-    ok("complete_returns_results")
+def test_env_isolation() -> None:
+    """A ClickUp token in the environment must not survive into the process."""
+    env = dict(os.environ)
+    env["CLICKUP_TOKEN"] = "pk_00000_INHERITEDSHOULDBEGONE"
+    env["SOME_OTHER_SECRET"] = "inherited-should-be-gone"
+
+    probe = (
+        "import sys, os; sys.path.insert(0, r'" + str(REPO / "agents") + "');"
+        "from _common import env as e; e.load('research',"
+        "required=['OPENROUTER_API_KEY','TAVILY_API_KEY']);"
+        "print('CLICKUP_TOKEN' in os.environ, 'SOME_OTHER_SECRET' in os.environ)"
+    )
+    out = subprocess.run([PY, "-c", probe], capture_output=True, text=True,
+                         env=env, timeout=60)
+    check("env probe ran", out.returncode == 0, out.stderr[-500:])
+    check("inherited CLICKUP_TOKEN is scrubbed", "False False" in out.stdout,
+          f"stdout={out.stdout!r}")
 
 
-def test_empty_results_is_no_results_not_blocked():
-    with _Key(), _Post(200, _body([])):
-        results, meta = research.search_web("q", 3)
-    assert results == []
-    assert meta["outcome"] == "no_results", meta
-    ok("empty_results_is_no_results_not_blocked")
+def test_network_allowlist() -> None:
+    probe = (
+        "import sys; sys.path.insert(0, r'" + str(REPO / "agents") + "');"
+        "sys.path.insert(0, r'" + str(REPO / "agents" / "research") + "');"
+        "import main;"
+        "from _common.errors import AgentError\n"
+        "try:\n"
+        "    main._post('https://api.clickup.com/api/v2/team', {}, {}, 5)\n"
+        "    print('REACHED')\n"
+        "except AgentError as exc:\n"
+        "    print('BLOCKED', exc.code)\n"
+    )
+    out = subprocess.run([PY, "-c", probe], capture_output=True, text=True, timeout=60)
+    check("ClickUp is not reachable from the research agent",
+          "BLOCKED host_not_allowed" in out.stdout,
+          f"stdout={out.stdout!r} stderr={out.stderr[-400:]}")
 
 
-def test_rate_limit_is_blocked():
-    err = urllib.error.HTTPError(research.API_URL, 429, "Too Many Requests", {}, None)
-    with _Key(), _Post(raises=err):
-        results, meta = research.search_web("q", 3)
-    assert meta["outcome"] == "blocked", meta
-    assert meta["http_status"] == 429
-    assert "quota or rate limit" in meta["detail"]
-    ok("rate_limit_is_blocked")
+def test_no_write_capability() -> None:
+    """The agent has no filesystem or process primitive in its source at all.
+
+    A capability check, not a style check: the claim "read only, no file
+    writes, no shell" is only worth making if something verifies it, and the
+    cheapest thing that does is the absence of the primitives.
+    """
+    import re
+
+    source = Path(AGENT).read_text(encoding="utf-8")
+    forbidden = {
+        # \b...\b so urlopen( does not read as open(.
+        "builtin open()": r"(?<![\w.])open\s*\(",
+        "subprocess": r"\bsubprocess\b",
+        "os.system": r"\bos\.system\b",
+        "os.popen": r"\bos\.popen\b",
+        "shutil": r"\bshutil\b",
+        "write_text/write_bytes": r"\.write_(?:text|bytes)\s*\(",
+        "mkdir": r"\.mkdir\s*\(",
+        "os.remove/unlink": r"\bos\.(?:remove|unlink|rmdir)\b",
+    }
+    for label, pattern in forbidden.items():
+        hits = re.findall(pattern, source)
+        check(f"agent source contains no {label}", not hits,
+              f"found {hits[:3]} in agents/research/main.py")
 
 
-def test_forbidden_is_blocked():
-    err = urllib.error.HTTPError(research.API_URL, 403, "Forbidden", {}, None)
-    with _Key(), _Post(raises=err):
-        _, meta = research.search_web("q", 3)
-    assert meta["outcome"] == "blocked", meta
-    ok("forbidden_is_blocked")
+def test_live(depth: str = "quick") -> None:
+    with MCPStdioClient([PY, AGENT], timeout=240) as client:
+        result = client.call(
+            "research",
+            {"question": "What is the Model Context Protocol?", "depth": depth},
+        )
+    if not result.get("ok"):
+        check("live research succeeded", False, str(result)[:600])
+        return
+    check("live research succeeded", True)
+    check("live research returns a summary", bool(result.get("summary")), str(result)[:300])
+    check("live research cites sources", len(result.get("sources") or []) > 0)
+    check("sources carry urls",
+          all(str(s.get("url", "")).startswith("http") for s in result["sources"]))
+    check("summary contains a citation marker", "[1]" in (result.get("summary") or ""),
+          (result.get("summary") or "")[:300])
+    check("sources are labelled untrusted",
+          all(s.get("trust") == "untrusted-third-party-content" for s in result["sources"]))
+    print("\n--- live summary (first 500 chars) ---")
+    print((result.get("summary") or "")[:500])
+    print(f"--- {len(result['sources'])} sources ---")
+    for source in result["sources"][:5]:
+        print(f"  [{source['n']}] {source['url']}")
 
 
-def test_rejected_credential_is_search_failed_not_blocked():
-    """A bad key is a misconfiguration to fix, not a provider throttling us."""
-    err = urllib.error.HTTPError(research.API_URL, 401, "Unauthorized", {}, None)
-    with _Key(), _Post(raises=err):
-        _, meta = research.search_web("q", 3)
-    assert meta["outcome"] == "search_failed", meta
-    assert "credential rejected" in meta["detail"]
-    ok("rejected_credential_is_search_failed_not_blocked")
+def main() -> int:
+    live = "--live" in sys.argv
+    test_server_starts_and_declares_one_tool()
+    test_bad_input_is_structured_not_a_crash()
+    test_no_secrets_and_no_stray_stdout()
+    test_env_isolation()
+    test_network_allowlist()
+    test_no_write_capability()
+    if live:
+        test_live()
 
-
-def test_server_error_is_search_failed():
-    err = urllib.error.HTTPError(research.API_URL, 500, "Server Error", {}, None)
-    with _Key(), _Post(raises=err):
-        _, meta = research.search_web("q", 3)
-    assert meta["outcome"] == "search_failed", meta
-    ok("server_error_is_search_failed")
-
-
-def test_transport_failure_is_search_failed():
-    with _Key(), _Post(raises=TimeoutError("timed out")):
-        _, meta = research.search_web("q", 3)
-    assert meta["outcome"] == "search_failed", meta
-    assert "TimeoutError" in meta["detail"]
-    ok("transport_failure_is_search_failed")
-
-
-def test_missing_key_is_search_failed_and_makes_no_call():
-    with _Key(value=None), _Post(200, _body([_result()])) as p:
-        results, meta = research.search_web("q", 3)
-    assert results == []
-    assert meta["outcome"] == "search_failed", meta
-    assert "TAVILY_API_KEY" in meta["detail"]
-    # No key means no request was attempted at all.
-    assert p.calls == []
-    ok("missing_key_is_search_failed_and_makes_no_call")
-
-
-def test_non_json_body_is_search_failed():
-    with _Key(), _Post(200, None):
-        _, meta = research.search_web("q", 3)
-    assert meta["outcome"] == "search_failed", meta
-    ok("non_json_body_is_search_failed")
-
-
-def test_missing_results_array_is_search_failed():
-    with _Key(), _Post(200, {"query": "q"}):
-        _, meta = research.search_web("q", 3)
-    assert meta["outcome"] == "search_failed", meta
-    ok("missing_results_array_is_search_failed")
-
-
-def test_request_carries_bearer_auth_and_user_agent():
-    with _Key("tvly-secret"), _Post(200, _body([_result()])) as p:
-        research.search_web("q", 3)
-    call = p.calls[0]
-    assert call["headers"]["Authorization"] == "Bearer tvly-secret"
-    # The key must never travel in the URL.
-    assert "tvly-secret" not in call["url"]
-    # _post sets the User-Agent itself; assert the module defines a real one.
-    assert research.USER_AGENT.startswith("juma-freelance-ai-research/")
-    ok("request_carries_bearer_auth_and_user_agent")
-
-
-def test_generated_answer_is_never_requested():
-    """A model-written summary is not evidence and must not be fetched."""
-    with _Key(), _Post(200, _body([_result()])) as p:
-        research.search_web("q", 3)
-    assert p.calls[0]["payload"]["include_answer"] is False
-    ok("generated_answer_is_never_requested")
-
-
-def test_fetch_content_selects_raw_extract():
-    with _Key(), _Post(200, _body([_result(raw_content="the full page text")])) as p:
-        results, _ = research.search_web("q", 3, include_raw=True)
-    assert p.calls[0]["payload"]["include_raw_content"] == "text"
-    assert results[0]["content"] == "the full page text"
-    # The short extract is still kept separately.
-    assert results[0]["snippet"] == "extracted text"
-    ok("fetch_content_selects_raw_extract")
-
-
-def test_raw_content_falls_back_to_content_when_absent():
-    with _Key(), _Post(200, _body([_result()])):
-        results, _ = research.search_web("q", 3, include_raw=True)
-    assert results[0]["content"] == "extracted text"
-    ok("raw_content_falls_back_to_content_when_absent")
-
-
-def test_content_is_capped():
-    huge = "x" * 50000
-    with _Key(), _Post(200, _body([_result(raw_content=huge)])):
-        results, _ = research.search_web("q", 3, include_raw=True)
-    assert len(results[0]["content"]) == research.MAX_CONTENT_CHARS
-    ok("content_is_capped")
-
-
-def test_max_results_is_clamped():
-    with _Key(), _Post(200, _body([])) as p:
-        research.search_web("q", 999)
-    assert p.calls[0]["payload"]["max_results"] == research.MAX_RESULTS_CEILING
-    with _Key(), _Post(200, _body([])) as p:
-        research.search_web("q", 0)
-    assert p.calls[0]["payload"]["max_results"] == 1
-    ok("max_results_is_clamped")
-
-
-def test_malformed_results_are_filtered_out():
-    bad = [
-        "not a dict",
-        {"url": "javascript:alert(1)", "title": "x"},
-        {"url": "ftp://example.com/f", "title": "x"},
-        {"title": "no url at all"},
-        _result(url="https://example.com/good"),
-    ]
-    with _Key(), _Post(200, _body(bad)):
-        results, meta = research.search_web("q", 10)
-    assert meta["results_seen"] == 5
-    assert [r["url"] for r in results] == ["https://example.com/good"]
-    ok("malformed_results_are_filtered_out")
-
-
-def test_no_scraping_helpers_remain():
-    """fetch_page and SimpleLinkParser were deleted, not left dormant."""
-    for gone in ("fetch_page", "SimpleLinkParser", "_CHALLENGE_RE"):
-        assert not hasattr(research, gone), f"{gone} is still present"
-    source = (BASE / "agents" / "research" / "main.py").read_text(encoding="utf-8")
-    # The docstring explains the removal; no executable reference may survive.
-    assert "HTMLParser" not in source
-    assert "html.duckduckgo.com/html" not in source.split('"""')[2]
-    ok("no_scraping_helpers_remain")
-
-
-def main():
-    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
-    try:
-        for t in tests:
-            t()
-        print(f"\nALL RESEARCH AGENT TESTS PASSED ({passed})")
-        return 0
-    except Exception as e:
-        print(f"FAIL: {e}")
-        import traceback
-        traceback.print_exc()
-        return 1
+    for name in PASSED:
+        print(f"  PASS  {name}")
+    for name in FAILED:
+        print(f"  FAIL  {name}")
+    print(f"\n{len(PASSED)} passed, {len(FAILED)} failed"
+          + ("" if live else "  (offline only; pass --live for a real search)"))
+    return 1 if FAILED else 0
 
 
 if __name__ == "__main__":

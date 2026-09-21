@@ -1,246 +1,122 @@
 # agentic-os
 
-An assistant for a one-person software consultancy. A client enquiry arrives over
-Telegram, three specialist agents gather what they can, a model drafts a
-proposal, and nothing reaches anyone until a human approves it.
+An assistant for a one-person software consultancy. Requests arrive over
+Telegram, Hermes decides which specialist should handle them, and the specialist
+does the work in its own process with its own credentials.
 
-It is a bounded pipeline, not an autonomous agent. Every step is a subprocess
-with a fixed contract, and the only thing that can send a message is code behind
-an approval gate.
+Hermes orchestrates and nothing else. It has no terminal, no file access, no
+code execution and no browser. Everything that can touch the world lives behind
+an agent boundary with its own confinement, and each boundary is enforced in
+code rather than asserted in a prompt.
 
-## What actually happens
+## Architecture
 
 ```
- Telegram  ──▶  OpenClaw gateway  ──▶  /apr_enquiry  ──▶  job_runner (detached, tracked)
-                                                               │
-                              ┌────────────────────────────────┤
-                              ▼                ▼               ▼
-                        research agent   projects agent   coding agent
-                         (Tavily)        (ClickUp, RO)   (feasibility)
-                              └────────────────┬───────────────┘
-                                               ▼
-                                     proposal synthesis  ──▶  provider chain
-                                               │                (Groq → Gemini
-                                               ▼                 → OpenRouter)
-                                     approval request on disk
-                                               │
-                              ┌────────────────┴────────────────┐
-                              ▼                                 ▼
-                    approval prompt (gateway)          PDF (Telegram Bot API)
-                              │
-                       /apr_approve <id>
-                              ▼
-                     external action executes
+  Telegram
+     │
+     ▼
+  Hermes  (sole orchestrator — routes, polls, reports; no tools of its own)
+     │
+     ├── stdio MCP ──▶  research agent   research(question, depth)
+     │                  Tavily + model. Read only. No files, no shell,
+     │                  no route to any host but its search API and model.
+     │
+     ├── stdio MCP ──▶  pm agent         pm_query(question) · pm_action(instruction)
+     │                  ClickUp. Create and update only — the DELETE verb has
+     │                  no code path at all.
+     │
+     └── stdio MCP ──▶  coding agent     start_code_task · get_status
+                        · get_result · list_changed_files
+                        Pi in Docker. Confined to the dev root, new branch per
+                        task, never pushes, .env files masked out of the mount.
 ```
 
-A proposal takes roughly 30 seconds. The slash command acknowledges immediately
-and the work happens in a detached child, so the handler never blocks.
+Each agent is a standalone process, its own model, its own `.env`. Hermes holds
+none of their keys, and each agent scrubs every inherited credential out of its
+environment before loading its own file — so the research agent cannot reach a
+ClickUp token even by accident.
 
-## Telegram commands
+## Model providers
 
-All are Telegram-only, require authorisation, and are checked twice: by the
-gateway against its channel allowlist, and again in `telegram_commands.py`
-against the configured user id.
+Split deliberately, because the two free tiers fail in opposite ways:
 
-| Command | Does |
-|---|---|
-| `/apr_enquiry <text>` | Draft a proposal for a client enquiry. Acknowledges at once; the approval prompt follows. |
-| `/apr_list` | Pending requests — id, subject, timestamp, status. Summary only. |
-| `/apr_status <id>` | One request's status, plus the decision once made. |
-| `/apr_approve <id>` | Approve. This is what permits an external action. |
-| `/apr_reject <id>` | Reject. |
-| `/apr_resume <id>` | Run the external action for an already-approved request. |
-| `/apr_jobs` | Recent workflow jobs: id, status, age, and the current checkpoint. |
-| `/apr_cancel <id>` | Stop a running job. A short id prefix is enough. |
+| | Hermes | Agents |
+|---|---|---|
+| Provider | OpenRouter | Groq |
+| Model | `nvidia/nemotron-3-ultra-550b-a55b:free` | `openai/gpt-oss-120b` |
+| Limit that binds | 50 requests/day, account-wide | 8,000 tokens/minute |
 
-`/apr_list` and `/apr_status` return identifiers only. They deliberately do not
-return the proposal body, the evidence block, or research content — a listing
-should not dump client-facing prose and scraped third-party text into a chat.
-
-The `apr_` prefix is not decoration: `approve` is an OpenClaw built-in that would
-silently shadow a plugin command, and `status` is reserved outright.
-
-## The three agents
-
-Each is a standalone subprocess speaking JSON over stdin/stdout, with its own
-authority level. They are engaged together for every enquiry, and each reports
-honestly when it finds nothing.
-
-**research** (`agents/research/main.py`) — Tavily search. A model first extracts
-2–4 focused queries from the enquiry, so the *problem domain* is searched rather
-than the client's prose. Results are filtered by relevance and dropped if they
-read as video transcripts or navigation chrome. If no model is available,
-research is skipped rather than run with a bad query. READ only.
-
-**projects** (`agents/projects/main.js`) — ClickUp, read-only at proposal time.
-Searches prior tasks for related work and returns **a count, never names**. Task
-names identify other clients, and a name reaching the proposal prompt would put
-one client's identity into another client's document.
-
-**coding** (`agents/coding/main.py`) — a `feasibility` action that reads the
-enquiry as prose and returns a component breakdown plus risks, each bound to a
-component. Feeds the proposal's approach section. **Nothing in this agent
-executes code**: no `exec`, no `eval`, no import of generated code, no test
-runner. Generated Python is checked with `ast.parse`, which builds a syntax tree
-and runs nothing.
-
-Their output reaches the model inside one delimited `GATHERED CONTEXT` block,
-marked as data rather than instruction. A section appears only when its agent
-returned something — so if an agent fails, the proposal says nothing about that
-dimension instead of inventing it.
-
-## The provider chain
-
-`orchestrator/llm.py` is the only place that talks to a model.
-
-| Order | Provider | Key | Default model |
-|---|---|---|---|
-| 1 | Groq | `GROQ_API_KEY` | `openai/gpt-oss-120b` |
-| 2 | Gemini (AI Studio) | `GEMINI_API_KEY` | `gemini-2.5-flash` |
-| 3 | OpenRouter | `OPENROUTER_API_KEY` | `nvidia/nemotron-3.5-lightning:free` |
-
-Every free tier here rate-limits, so a single provider fails for reasons that
-have nothing to do with the enquiry. Providers are tried in order. Rate limits,
-5xx, timeouts and rejected credentials all move to the next one; a provider with
-no key is skipped silently, so the chain is whatever keys you actually hold.
-
-When every provider declines, it fails loudly. There is no fallback text
-anywhere: you get a proposal or an error, never a template.
-
-A reply that arrives but is unusable is **not** a fallthrough. A model answered
-and the answer was bad — that is `llm_invalid_output`, and it is terminal.
-Asking three providers in turn for prose that passes validation is how a
-plausible-but-wrong proposal eventually gets through.
-
-Models are overridable with `GROQ_MODEL`, `GEMINI_MODEL`, `OPENROUTER_MODEL`.
-
-## What the model is not allowed to do
-
-The proposal prose comes from a model. The identity and every number do not.
-
-- `name`, `business` and contact details are appended by code after the model
-  returns, so a proposal cannot be signed with anyone else's name
-- rate, engagement types and payment terms are read from `config/juma.json` and
-  rendered in code; the model is forbidden to state any figure, and never sees
-  one
-- services are restricted to a candidate list built from config
-- validation rejects: quoted currency amounts, placeholder markers, services not
-  offered, a missing or over-long subject, and prior-work claims naming anyone
-
-Commercial terms are framed as indicative, not a quote, because the
-clarification questions are unanswered — you cannot price work you cannot yet
-scope.
-
-## Approval
-
-Nothing external happens without `/apr_approve`. The request, the decision and
-the evidence are separate files under `.approval/` and `evidence/`, both
-gitignored. A decision is never overwritten by a second one. Re-running a
-workflow creates a new request rather than mutating an existing one.
-
-## Running it
-
-Requires Python 3.11+, Node 20+, and an OpenClaw gateway for Telegram.
-
-```bash
-git clone https://github.com/BukomaJumaMoya/agentic-os
-cd agentic-os
-pip install -r requirements.txt      # only needed for PDF rendering
-```
-
-Run the workflow directly, without Telegram:
-
-```bash
-echo '{"enquiry": "We need appointment reminders from a spreadsheet."}' \
-  | python orchestrator/flagship.py
-```
-
-Run one agent:
-
-```bash
-echo '{"queries": ["appointment reminder automation"], "max_sources": 3}' \
-  | python agents/research/main.py
-echo '{"action": "list_spaces"}' | node agents/projects/main.js
-echo '{"action": "feasibility", "prompt": "..."}' | python agents/coding/main.py
-```
-
-Tests — all offline, no keys, no network:
-
-```bash
-PYTHONPATH=. python tests/test_step7_flagship_unit.py
-PYTHONPATH=. python tests/test_coding_agent.py
-node tests/test_projects_agent.js
-```
-
-### Environment
-
-| Variable | Needed for |
-|---|---|
-| `GROQ_API_KEY` / `GEMINI_API_KEY` / `OPENROUTER_API_KEY` | Any model call. At least one. |
-| `TAVILY_API_KEY` | Research. Without it, research is skipped. |
-| `CLICKUP_TOKEN` | Projects agent. |
-| `OPENCLAW_GATEWAY_TOKEN` | Talking to the gateway. |
-| `OPENCLAW_ALLOWED_USER_ID` | Who may approve. Falls back to `config/juma.json`. |
-| `TELEGRAM_BOT_TOKEN` | PDF delivery. Falls back to OpenClaw's config. |
-
-Optional: `CLICKUP_TEAM_ID`, `TAVILY_SEARCH_DEPTH`, `AGENTIC_STATE_DIR`,
-`CODING_AGENT_WORKSPACE`, `AGENTIC_PYTHON`, `OPENCLAW_GATEWAY_URL`.
-
-**No key belongs in `config/juma.json`.** That file is committed. Credentials are
-read from the environment, and the code refuses rather than falling back to a
-committed file.
-
-## What this deliberately does not do
-
-**External actions deliver to the operator, not to clients.** An approved
-proposal is sent to *your* Telegram, not to the client. There is no email
-integration and no client-facing send path. You forward it yourself. This is the
-single most important thing to understand before trusting the word "approved".
-
-**Nothing executes generated code.** The coding agent writes code and test
-source; running it is a separate decision made elsewhere.
-
-**Research is third-party text.** Findings are claims from web pages, not
-verified facts, and they are labelled that way where they enter the prompt. They
-are also an injection surface: the prompt fences them and instructs the model to
-treat them as data, which is mitigation rather than a guarantee.
-
-**Free tiers see your enquiries.** Every provider in the chain is a free tier,
-and free tiers are broadly where providers reserve the right to log prompts and
-train on them. Treat every run as disclosing the enquiry to whichever provider
-serves it. Client work that cannot be disclosed needs a paid tier with a data
-processing agreement.
-
-## Status
-
-CI (`quality` and `smoke`) passes. It runs a credential scan over tracked files,
-syntax checks, and every test suite — approval boundary, flagship unit, e2e,
-failure injection, integration, workspace confinement, research, coding, PDF and
-projects. All of them run offline.
-
-Known open items:
-
-- The coding agent's `feasibility` action succeeds about 4 times in 5. The
-  failure is its own validation rejecting a risk that names no component — the
-  rule is deliberately strict, because a malformed reply is the model missing
-  its contract and hiding that would hide the rate.
-- `orchestrator/external_action.py` sends to the operator only, as above.
-- The Python side now has dependencies (`fpdf2` and its three transitive ones,
-  including a compiled Pillow) solely for PDF rendering. Everything else is
-  stdlib, and `proposal_pdf` imports lazily, so a machine without them produces
-  a proposal with no PDF rather than no proposal.
-- A ClickUp personal token was committed in this repository's history inside a
-  nested `.git.bak/` object store and is public. It has not been rewritten out.
-  Rotate that token.
+Hermes cannot run on Groq. Its Telegram tool surface measures ~6,866 tokens per
+model call, a routing turn needs at least two calls, and every tool-capable Groq
+model is capped at 8,000 tokens per minute. The two Groq models with a higher
+cap refuse tool calling outright, which is the only thing an orchestrator does.
+The arithmetic and the measurements are in `hermes/configure_providers.py`.
 
 ## Layout
 
 ```
-agents/         research (Tavily), projects (ClickUp), coding (feasibility)
-orchestrator/   llm (provider chain), proposal, research_query, flagship,
-                approval, telegram_approval, telegram_commands, jobs, job_runner,
-                external_action, proposal_pdf
-tools/          OpenClaw plugin registering the /apr_* slash commands
-config/         juma.json — identity, services, rates. No credentials.
-tests/          offline suites; no network, no API keys
+agents/_common/     shared scaffold: env scrubbing, structured errors and
+                    redaction, per-agent audit log, provider chain, job
+                    registry, untrusted-content fencing, path confinement
+agents/research/    Tavily research, read only
+agents/pm/          ClickUp, no delete
+agents/coding/      Pi coding agent, Docker-sandboxed
+hermes/             the Hermes-side configuration, kept in the repo because
+                    `hermes update` stashes local changes to its checkout
+tests/              real MCP stdio clients, not mocks
+archive/pre-hermes/ the previous enquiry/proposal pipeline and its tests
 ```
+
+## Setup
+
+```bash
+python -m venv agents/.venv
+agents/.venv/Scripts/pip install -r requirements.txt
+docker build -t juma-pi-sandbox:1 agents/coding      # sandbox for the coding agent
+(cd agents/coding/vendor && npm install)              # the Pi coding agent
+
+python hermes/apply_approval_patch.py     # re-run after every `hermes update`
+python hermes/configure_providers.py
+python hermes/configure_orchestrator.py
+```
+
+Each agent needs its own `agents/<name>/.env` (gitignored). Key names only:
+
+| agent | keys |
+|---|---|
+| research | `GROQ_API_KEY`, `OPENROUTER_API_KEY`, `TAVILY_API_KEY`, `RESEARCH_MODEL` |
+| pm | `GROQ_API_KEY`, `OPENROUTER_API_KEY`, `CLICKUP_TOKEN`, `CLICKUP_TEAM_ID`, `PM_MODEL` |
+| coding | `GROQ_API_KEY`, `OPENROUTER_API_KEY`, `CODING_MODEL`, `CODING_ROOT`, `CODING_SANDBOX` |
+
+## The approval patch
+
+`hermes/apply_approval_patch.py` makes reading Hermes' secret store require
+approval. Upstream covers *writes* to `~/.hermes/.env`; reads were uncovered,
+and the read is the whole prize — every provider key and the Telegram bot token
+live in that one file.
+
+It matches on the path rather than on a read verb, because the verb list is
+unbounded: `cat`, `type`, `more`, `head`, `tail`, `strings`, `xxd`, `grep`,
+`sed -n`, `findstr`, `Get-Content`, `Select-String`, `python -c open()`,
+`node -e readFileSync()`, and whatever ships next year.
+
+Re-run it after every `hermes update`. Hermes is a git checkout and `update`
+stashes local changes, so the previous patch vanished silently — the verdict for
+`cat ~/.hermes/.env` was back to `allow` and nothing said so.
+
+## Tests
+
+```bash
+agents/.venv/Scripts/python tests/test_common_scaffold.py
+agents/.venv/Scripts/python tests/test_research_agent.py   # --live for a real search
+agents/.venv/Scripts/python tests/test_pm_agent.py         # --live hits real ClickUp
+agents/.venv/Scripts/python tests/test_coding_agent.py     # --live runs Pi
+```
+
+The agents are exercised over real MCP stdio, not by importing their functions:
+that is the only way to catch a server that fails to start, a malformed tool
+schema, or a stray `print()` corrupting the JSON-RPC stream.
+
+The security properties are the majority of the suite on purpose. "It works" is
+cheap to re-establish; "it cannot escape" has to be re-established on every
+change.

@@ -30,3 +30,19 @@ openclaw-agent.sqlite
 __pycache__/
 *.pyc
 .openclaw/
+
+# Per-agent virtualenv holding the MCP SDK. Rebuilt by:
+#   python -m venv agents/.venv && agents/.venv/Scripts/pip install -r requirements.txt
+agents/.venv/
+
+# Per-agent secrets. Each agent reads ONLY its own file; see agents/_common/env.py.
+# The bare `.env` rule above already matches these at any depth -- named here so
+# that the rule is visible to anyone adding a fourth agent.
+agents/*/.env
+
+# The Pi coding agent, installed locally by the coding agent's vendor/package.json.
+# 144 packages of third-party JS; reinstall with:
+#   cd agents/coding/vendor && npm install
+agents/coding/vendor/node_modules/
+agents/coding/vendor/package-lock.json
+agents/coding/vendor/.env-mask-empty
