@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from pathlib import Path
 import sys
 import threading
 from typing import Any
@@ -149,4 +150,19 @@ class MCPStdioClient:
 
 
 def python_exe() -> str:
+    """The interpreter the agents should run under, on any platform.
+
+    The repo venv if it exists (Windows `Scripts/`, POSIX `bin/`), otherwise
+    the interpreter running this test. The tests used to hardcode
+    `agents/.venv/Scripts/python.exe`, which meant CI -- Ubuntu, no venv --
+    died with FileNotFoundError on the first agent it tried to start. That is
+    the second reason `quality` had never passed; the credential scan was the
+    first.
+    """
+    import os
+    repo = Path(__file__).resolve().parent.parent
+    for candidate in (repo / "agents" / ".venv" / "Scripts" / "python.exe",
+                      repo / "agents" / ".venv" / "bin" / "python"):
+        if candidate.exists():
+            return str(candidate)
     return sys.executable

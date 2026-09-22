@@ -19,9 +19,9 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "tests"))
 sys.path.insert(0, str(REPO / "agents"))
 
-from mcp_client import MCPStdioClient  # noqa: E402
+from mcp_client import MCPStdioClient, python_exe  # noqa: E402
 
-PY = str(REPO / "agents" / ".venv" / "Scripts" / "python.exe")
+PY = python_exe()   # repo venv if present, else this interpreter
 AGENT = str(REPO / "agents" / "research" / "main.py")
 
 PASSED: list[str] = []

@@ -84,8 +84,8 @@ def test_agent_cannot_send_anything() -> None:
 
 
 def test_server_tools() -> None:
-    from mcp_client import MCPStdioClient
-    python = REPO / "agents" / ".venv" / "Scripts" / "python.exe"
+    from mcp_client import MCPStdioClient, python_exe
+    python = Path(python_exe())
     main = REPO / "agents" / "docs" / "main.py"
     with MCPStdioClient([str(python), str(main)], cwd=str(main.parent),
                         timeout=180) as client:

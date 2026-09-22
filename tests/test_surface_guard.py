@@ -355,7 +355,8 @@ def test_annotations_match_the_manifest() -> None:
     sys.path.insert(0, str(REPO / "tests"))
     from mcp_client import MCPStdioClient
 
-    python = REPO / "agents" / ".venv" / "Scripts" / "python.exe"
+    from mcp_client import python_exe
+    python = Path(python_exe())
     if not python.exists():                                # pragma: no cover
         check("agent venv present", False, f"{python} not found")
         return
