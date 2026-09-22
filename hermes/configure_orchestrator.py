@@ -43,21 +43,37 @@ REPO = Path(__file__).resolve().parent.parent
 AGENTS = REPO / "agents"
 PYTHON = AGENTS / ".venv" / "Scripts" / "python.exe"
 
-# Exactly the tools each agent exposes. Kept here as a whitelist so a new tool
-# on an agent is an explicit decision here, not an automatic grant.
-AGENT_TOOLS = {
-    "research": ["research"],
-    "pm": ["pm_query", "pm_action"],
-    "coding": ["start_code_task", "get_status", "get_result", "list_changed_files"],
+# MCP server name -> (agent directory, exactly the tools it exposes).
+#
+# THE SERVER NAME IS NOT FREE-FORM. Hermes merges MCP server names into the
+# enabled-TOOLSET list (hermes_cli/tools_config.py, _merge_mcp_servers), and
+# resolves each one as a toolset. So a server whose name matches a built-in
+# toolset silently grants that entire toolset. `coding` is a built-in name --
+# 37 tools including terminal, write_file and browser -- and naming the server
+# `coding` is what put all of them on the Telegram surface while config.yaml
+# still read as six restricted entries. See hermes/harden_telegram_surface.py.
+#
+# The server is therefore `coding_agent`; the directory stays `agents/coding`.
+# Before adding a fourth agent, check its name against `hermes tools list`.
+AGENT_SPEC = {
+    "research": ("research", ["research"]),
+    "pm": ("pm", ["pm_query", "pm_action"]),
+    "coding_agent": ("coding", ["start_code_task", "get_status", "get_result",
+                                "list_changed_files"]),
 }
 
+# Kept as a name->tools view for the verification loop below.
+AGENT_TOOLS = {name: tools for name, (_dir, tools) in AGENT_SPEC.items()}
+
+# The three servers by their real names, so _merge_mcp_servers() treats this as
+# an allowlist instead of falling back to "every globally enabled MCP server".
 TELEGRAM_TOOLSETS = [
     "clarify",
     "memory",
-    "mcp-coding",
-    "mcp-pm",
-    "mcp-research",
     "session_search",
+    "research",
+    "pm",
+    "coding_agent",
 ]
 
 MARKER = "# juma-rebuild: agent MCP servers"
@@ -84,13 +100,13 @@ def build_mcp_block() -> str:
         "# before loading its own file (agents/_common/env.py).",
         "mcp_servers:",
     ]
-    for name, tools in AGENT_TOOLS.items():
+    for name, (directory, tools) in AGENT_SPEC.items():
         lines += [
             f"  {name}:",
             f"    command: {PYTHON.as_posix()}",
             "    args:",
-            f"      - {(AGENTS / name / 'main.py').as_posix()}",
-            f"    cwd: {(AGENTS / name).as_posix()}",
+            f"      - {(AGENTS / directory / 'main.py').as_posix()}",
+            f"    cwd: {(AGENTS / directory).as_posix()}",
             "    tools:",
             "      include:",
         ]
@@ -145,9 +161,9 @@ def add_agents_to_cli(text: str) -> tuple[str, str]:
 
     The CLI keeps terminal and file -- see the module docstring for why -- but
     the agents belong on every Hermes surface, not just Telegram. It also makes
-    the Telegram configuration testable: with the agents registered, `hermes -z
-    -t clarify,memory,session_search,mcp-research,mcp-pm,mcp-coding` reproduces
-    the Telegram tool surface exactly, which is what the audit needs to probe.
+    the Telegram configuration testable: `hermes/cli_surface.py telegram`
+    mirrors the Telegram list onto the CLI so `hermes -z` reproduces the
+    Telegram tool surface exactly, which is what the audit needs to probe.
     """
     lines = text.splitlines(keepends=True)
     span = _platform_block(lines, "cli")
@@ -156,7 +172,7 @@ def add_agents_to_cli(text: str) -> tuple[str, str]:
     start, end = span
 
     current = [l.strip()[2:] for l in lines[start + 1:end]]
-    agents = [t for t in TELEGRAM_TOOLSETS if t.startswith("mcp-")]
+    agents = list(AGENT_SPEC)
     missing = [t for t in agents if t not in current]
     if not missing:
         return text, "SKIP: cli already has the agent toolsets"
