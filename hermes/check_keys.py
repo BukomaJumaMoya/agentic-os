@@ -58,12 +58,18 @@ def hermes_home() -> Path:
 
 
 def env_files() -> list[tuple[str, Path]]:
-    return [
-        ("agents/research", REPO / "agents" / "research" / ".env"),
-        ("agents/pm", REPO / "agents" / "pm" / ".env"),
-        ("agents/coding", REPO / "agents" / "coding" / ".env"),
-        ("hermes", hermes_home() / ".env"),
-    ]
+    """Every agent .env, DISCOVERED not listed.
+
+    The hard-coded list silently skipped agents/docs and agents/kola for a
+    whole prompt: they were added, they held credentials, and this reported
+    "every credential authenticated" without ever opening them. A checker whose
+    coverage is a literal list goes stale the moment someone adds a directory.
+    """
+    found = [(f"agents/{d.name}", d / ".env")
+             for d in sorted((REPO / "agents").iterdir())
+             if d.is_dir() and not d.name.startswith((".", "_"))
+             and (d / ".env").exists()]
+    return found + [("hermes", hermes_home() / ".env")]
 
 
 def parse_env(path: Path) -> dict[str, str]:
@@ -129,6 +135,25 @@ def check_telegram(key: str):
     return _get(f"https://api.telegram.org/bot{key}/getMe", {})
 
 
+def check_github(key: str):
+    """GET /user. Works for a classic PAT and a fine-grained one alike."""
+    return _get("https://api.github.com/user", {
+        "Authorization": f"Bearer {key}",
+        "Accept": "application/vnd.github+json"})
+
+
+def check_kola(key: str):
+    """The MCP endpoint's own tools/list -- the cheapest authenticated read it
+    has. Their auth backend has been intermittently down, which surfaces as a
+    200 carrying an error body rather than a 401, so that case is reported as
+    unknown rather than as a dead key."""
+    body = json.dumps({"jsonrpc": "2.0", "id": 1,
+                       "method": "tools/list", "params": {}}).encode()
+    return _get("https://mcp.kolaborate.africa/api/mcp", {
+        "Authorization": f"Bearer {key}", "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream"}, body)
+
+
 def check_tavily(key: str):
     """Tavily moved from an api_key field to bearer auth and still accepts
     both, so a 401 on one spelling is retried with the other before a key is
@@ -150,6 +175,8 @@ VALIDATORS = {
     "CLICKUP_TOKEN": check_clickup,
     "TELEGRAM_BOT_TOKEN": check_telegram,
     "TAVILY_API_KEY": check_tavily,
+    "GITHUB_TOKEN": check_github,
+    "KOLA_API_KEY": check_kola,
 }
 
 # Settings, not credentials. Named explicitly rather than guessed from the name,
@@ -158,6 +185,8 @@ NOT_CREDENTIALS = {
     "FALLBACK_MODELS", "RESEARCH_MODEL", "RESEARCH_OPENROUTER_MODEL",
     "PM_MODEL", "PM_OPENROUTER_MODEL", "CLICKUP_TEAM_ID",
     "CODING_MODEL", "CODING_ROOT", "CODING_SANDBOX", "CODING_TOKEN_TOOLS",
+    "CODING_OPENROUTER_MODEL", "DOCS_MODEL", "DOCS_OPENROUTER_MODEL",
+    "KOLA_MODEL", "KOLA_OPENROUTER_MODEL", "KOLA_MCP_URL",
     "TELEGRAM_ALLOWED_USERS", "TERMINAL_ENV", "TERMINAL_TIMEOUT",
     "TERMINAL_LIFETIME_SECONDS", "TERMINAL_MODAL_IMAGE",
     "BROWSER_INACTIVITY_TIMEOUT", "BROWSER_SESSION_TIMEOUT",
