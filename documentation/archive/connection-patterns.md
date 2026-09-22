@@ -289,9 +289,9 @@ Response → Hermes → user
 | Hermes → Git (local) | Local (user.name/email) | Git config | ✅ Working |
 | Hermes → OpenClaw gateway | Gateway auth token | OpenClaw config (openclaw.json) | ⚠️ Gateway running; routing not configured |
 | OpenClaw → OpenRouter | API key (in openclaw.json + state DB + agent DB) | OpenClaw stores | ✅ Working (verified: OpenRouter 200) |
-| OpenClaw → Telegram | Bot token (`8845344838:XXX`) | OpenClaw config (openclaw.json) | ✅ Working (allowlist 1360833951) |
-| User → Hermes Telegram | Bot token (`8917859111:XXX`) | Hermes `.env` | ✅ Working (allowlist 1360833951) |
-| User → OpenClaw Telegram | Bot token (`8845344838:XXX`) | OpenClaw config (openclaw.json) | ✅ Working (allowlist 1360833951) |
+| OpenClaw → Telegram | Bot token (`<bot-id-redacted>:XXX`) | OpenClaw config (openclaw.json) | ✅ Working (allowlist <chat-id-redacted>) |
+| User → Hermes Telegram | Bot token (`<bot-id-redacted>:XXX`) | Hermes `.env` | ✅ Working (allowlist <chat-id-redacted>) |
+| User → OpenClaw Telegram | Bot token (`<bot-id-redacted>:XXX`) | OpenClaw config (openclaw.json) | ✅ Working (allowlist <chat-id-redacted>) |
 
 ---
 

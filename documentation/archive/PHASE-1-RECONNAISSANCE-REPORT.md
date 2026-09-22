@@ -11,14 +11,14 @@
 ### A.1 Actual deployed topology
 
 ```
-JUMA (human, Telegram ID 1360833951)
+JUMA (human, Telegram ID <chat-id-redacted>)
   │
-  ├─→ Telegram bot @bukomahermesbot (token 8917859111:***) → Hermes gateway
+  ├─→ Telegram bot @bukomahermesbot (token <bot-id-redacted>:***) → Hermes gateway
   │   PID 14736, Solar Pro4 via Nous Portal OAuth
   │   config: ~/.hermes/config.yaml, keys: ~/.hermes/.env
   │   Built-in tools: web_search, web_extract, browser_exec, delegation, skills
   │
-  └─→ Telegram bot @bukomaopenclawbot (token 8845344838:***) → OpenClaw gateway
+  └─→ Telegram bot @bukomaopenclawbot (token <bot-id-redacted>:***) → OpenClaw gateway
       PID 26548, port 127.0.0.1:18789, Solar Pro4 via OpenRouter
       config: ~/.openclaw/openclaw.json, auth in openclaw.json + 2 SQLite DBs
 ```
@@ -72,8 +72,8 @@ Sources: documentation/research-agent.md §1, documentation/projects-agent.md §
 | Hermes → GitHub | gh CLI + git CLI | PAT in Windows credential manager | ✅ Working (14 repos) |
 | Hermes → OpenClaw (fallback) | NOT CONFIGURED | Gateway auth token exists | ⚠️ Documented but not wired |
 | OpenClaw → OpenRouter | REST API | API key in openclaw.json + 2 SQLite DBs | ✅ Working (verified: OpenRouter 200) |
-| OpenClaw → Telegram | Bot API (polling) | Bot token 8845344838:*** | ✅ Working (allowlist 1360833951) |
-| Hermes → Telegram | Bot API (polling) | Bot token 8917859111:*** | ✅ Working (allowlist 1360833951) |
+| OpenClaw → Telegram | Bot API (polling) | Bot token <bot-id-redacted>:*** | ✅ Working (allowlist <chat-id-redacted>) |
+| Hermes → Telegram | Bot API (polling) | Bot token <bot-id-redacted>:*** | ✅ Working (allowlist <chat-id-redacted>) |
 | Gemini CLI (interactive) | Local CLI | GEMINI_API_KEY in Hermes .env | ⚠️ CLI has headless hang; API is reliable path |
 
 ### A.5 The routing gap (most critical architectural discrepancy — CONFIRMED)
@@ -82,8 +82,8 @@ Sources: documentation/research-agent.md §1, documentation/projects-agent.md §
 
 **Actual architecture:** Two independent runtimes, each with its own Telegram bot. No routing between them.
 
-- Hermes has its own Telegram bot (8917859111:***) and receives messages directly from Telegram
-- OpenClaw has its own Telegram bot (8845344838:***) and receives messages directly from Telegram
+- Hermes has its own Telegram bot (<bot-id-redacted>:***) and receives messages directly from Telegram
+- OpenClaw has its own Telegram bot (<bot-id-redacted>:***) and receives messages directly from Telegram
 - Hermes does NOT delegate orchestration to OpenClaw
 - OpenClaw does NOT forward to Hermes
 - The "fallback model path" from Hermes to OpenClaw is documented (connection-patterns.md §2.5, hermes-orchestration-model.md §7) but NOT configured
@@ -166,7 +166,7 @@ juma-freelance-ai/
 | File | Purpose | Contains |
 |---|---|---|
 | C:\Users\HP\AppData\Local\hermes\config.yaml | Hermes configuration | model, gateway, platforms.telegram (bot_token, allow_list), tools, delegation, compression, memory, kanban |
-| C:\Users\HP\AppData\Local\hermes\.env | Hermes secrets | TELEGRAM_BOT_TOKEN, TELEGRAM_ALLOWED_USERS=1360833951, GEMINI_API_KEY, CLICKUP_TOKEN (all set, verified) |
+| C:\Users\HP\AppData\Local\hermes\.env | Hermes secrets | TELEGRAM_BOT_TOKEN, TELEGRAM_ALLOWED_USERS=<chat-id-redacted>, GEMINI_API_KEY, CLICKUP_TOKEN (all set, verified) |
 | C:\Users\HP\.openclaw\openclaw.json | OpenClaw configuration | agents, gateway (port 18789, auth token), channels.telegram (botToken, dmPolicy, allowFrom), auth.profiles (openrouter), plugins (openrouter, telegram), hooks (session-memory) |
 | C:\Users\HP\.openclaw\openclaw.sqlite + openclaw-agent.sqlite | OpenClaw state DBs | OpenRouter API key stored in 3 locations total (openclaw.json + 2 SQLite DBs) |
 | C:\Users\HP\.openclaw\workspace\ | OpenClaw workspace | AGENTS.md, BOOTSTRAP.md, IDENTITY.md, SOUL.md, USER.md (OpenClaw agent persona files) |
@@ -187,11 +187,11 @@ juma-freelance-ai/
 
 - Hermes gateway running (PID 14736, confirmed via `hermes gateway status`: "Gateway process running (PID: 14736)")
 - Solar Pro4 via Nous Portal OAuth (config.yaml: provider: nous, base_url: https://inference-api.nousresearch.com/v1, model.default: upstage/solar-pro4:free)
-- Telegram bot 8917859111:*** allowlisted to user 1360833951 only (config.yaml platforms.telegram.bot_token + platforms.telegram.allow_list: [1360833951])
+- Telegram bot <bot-id-redacted>:*** allowlisted to user <chat-id-redacted> only (config.yaml platforms.telegram.bot_token + platforms.telegram.allow_list: [<chat-id-redacted>])
 - Built-in tools: web_search, web_extract, browser_exec, delegation, skills
 - Hermes .env at C:\Users\HP\AppData\Local\hermes\.env (26665 bytes) — confirmed all required keys set:
   - TELEGRAM_BOT_TOKEN (set, redacted in read)
-  - TELEGRAM_ALLOWED_USERS=1360833951
+  - TELEGRAM_ALLOWED_USERS=<chat-id-redacted>
   - GEMINI_API_KEY (set, redacted in read)
   - CLICKUP_TOKEN (set, redacted in read)
 - Hermes config.yaml at C:\Users\HP\AppData\Local\hermes\config.yaml (6145 bytes)
@@ -207,12 +207,12 @@ juma-freelance-ai/
 ### C.2 OpenClaw integration
 
 - OpenClaw v2026.9.1, gateway on 127.0.0.1:18789, PID 26548
-- Telegram bot 8845344838:*** (@bukomaopenclawbot), allowlisted to 1360833951 only (openclaw.json channels.telegram)
+- Telegram bot <bot-id-redacted>:*** (@bukomaopenclawbot), allowlisted to <chat-id-redacted> only (openclaw.json channels.telegram)
 - Solar Pro4 via OpenRouter (api.openrouter.ai, model openrouter/upstage/solar-pro4 per openclaw.json agents.defaults.models)
 - Config at C:\Users\HP\.openclaw\openclaw.json:
   - agents.entries.main (agent ID "main", workspace C:\Users\HP\.openclaw\workspace)
   - gateway: mode local, auth token, port 18789, bind loopback
-  - channels.telegram: enabled, botToken, dmPolicy allowlist, allowFrom [1360833951]
+  - channels.telegram: enabled, botToken, dmPolicy allowlist, allowFrom [<chat-id-redacted>]
   - auth.profiles.openrouter:default + openrouter:manual (both provider openrouter, mode api_key)
   - plugins.entries: openrouter (enabled), telegram (enabled)
   - hooks.internal.entries.session-memory (enabled)
@@ -232,9 +232,9 @@ juma-freelance-ai/
 
 ### C.3 Telegram integration
 
-- Two independent bots, both allowlisted to user ID 1360833951 only
-- Hermes bot (8917859111:***) — primary documented UI, Hermes gateway PID 14736
-- OpenClaw bot (@bukomaopenclawbot, 8845344838:***) — secondary/fallback channel, OpenClaw gateway PID 26548
+- Two independent bots, both allowlisted to user ID <chat-id-redacted> only
+- Hermes bot (<bot-id-redacted>:***) — primary documented UI, Hermes gateway PID 14736
+- OpenClaw bot (@bukomaopenclawbot, <bot-id-redacted>:***) — secondary/fallback channel, OpenClaw gateway PID 26548
 - Both verified working:
   - Hermes: session 20260904_100756_253d81af (from phase0-output.md)
   - OpenClaw: KEY_OK reply (inbound 12:46:31 → OpenRouter 200 at 12:46:38 → TG delivery 12:46:41, from phase0-output.md)
@@ -325,7 +325,7 @@ juma-freelance-ai/
 ### D.1 OpenClaw → Hermes routing NOT configured (CRITICAL — confirmed, not theoretical)
 
 - **FACT:** The target architecture specifies Telegram → OpenClaw → Hermes → specialists.
-- **FACT:** The actual system has two independent runtimes, each with its own Telegram bot. Hermes's direct Telegram bot (8917859111:***) receives messages directly from Telegram. OpenClaw's bot (8845344838:***) also receives messages directly from Telegram.
+- **FACT:** The actual system has two independent runtimes, each with its own Telegram bot. Hermes's direct Telegram bot (<bot-id-redacted>:***) receives messages directly from Telegram. OpenClaw's bot (<bot-id-redacted>:***) also receives messages directly from Telegram.
 - **FACT:** Hermes does NOT delegate orchestration to OpenClaw. OpenClaw does NOT forward to Hermes. There is no routing between them in either direction.
 - **FACT:** stack.md §5.2 and DELIVERABLE-1-COMPLETION-REPORT.md §3 describe a "revised architecture" where Hermes = sole orchestrator and OpenClaw = fallback model path. connection-patterns.md §2.5 states: "OpenClaw → Hermes failover routing is NOT configured."
 - **INFERENCE:** The "revised architecture" in the documentation is aspirational, not deployed. The routing change was documented but never implemented.

@@ -174,7 +174,7 @@ evidence/
 1. **Operation fails** → error logged at ERROR level (see Phase 6 — Error Handling)
 2. **Retry attempt** → if error is transient, retry once (see Phase 6 retry policies)
 3. **Retry fails or error is permanent** → alert human via the appropriate channel:
-   - If Hermes was interacting via Telegram: send Telegram alert to Juma Moya (ID 1360833951)
+   - If Hermes was interacting via Telegram: send Telegram alert to Juma Moya (ID <chat-id-redacted>)
    - If Hermes was executing via console: output ERROR to console (Hermes reads it and can report via Telegram)
    - If operation had a ClickUp task: add error comment to the task
 4. **Human acknowledges** → human can:

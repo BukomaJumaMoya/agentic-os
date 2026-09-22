@@ -16,8 +16,8 @@
 
 | Component | Status | Details |
 |-----------|--------|---------|
-| Hermes gateway | ✅ Running | PID 32300, Telegram bot `8917859111:***`, allowlist 1360833951, Solar Pro4 via Nous Portal OAuth |
-| OpenClaw gateway | ✅ Running | PID 26548, port 18789, Telegram bot `@bukomaopenclawbot`, allowlist 1360833951, Solar Pro4 via OpenRouter |
+| Hermes gateway | ✅ Running | PID 32300, Telegram bot `<bot-id-redacted>:***`, allowlist <chat-id-redacted>, Solar Pro4 via Nous Portal OAuth |
+| OpenClaw gateway | ✅ Running | PID 26548, port 18789, Telegram bot `@bukomaopenclawbot`, allowlist <chat-id-redacted>, Solar Pro4 via OpenRouter |
 | Node.js | ✅ v24.19.0 | At `D:\Bukoma Juma Moya\Program Files\Node\node.exe` |
 | npm/npx | ✅ | npm 11.5.2, npx available |
 | Python | ✅ 3.11.16 | Hermes venv, used for DB inspection scripts |
@@ -53,7 +53,7 @@
 ```
                     ┌─────────────────────────────────────────────┐
                     │              JUMA MOYA (user)                │
-                    │         Telegram user ID: 1360833951         │
+                    │         Telegram user ID: <chat-id-redacted>         │
                     └──────────┬──────────────────┬───────────────┘
                                │                  │
                     ┌──────────▼──────────┐  ┌─────▼──────────────────┐
@@ -82,8 +82,8 @@
 **Why two runtimes:** Hermes uses Solar Pro4 via Nous Portal OAuth (free tier, Nous Portal). OpenClaw uses Solar Pro4 via OpenRouter API key (separate billing, different endpoint). Both give access to Solar Pro4 but through different providers. Hermes handles orchestration; OpenClaw provides an alternative model access path if Hermes's Nous Portal OAuth has issues.
 
 **Communication paths:**
-- JUMA ↔ Hermes: Telegram (bot token `8917859111:***`, allowlist 1360833951)
-- JUMA ↔ OpenClaw: Telegram (bot token `8845344838:***`, allowlist 1360833951)
+- JUMA ↔ Hermes: Telegram (bot token `<bot-id-redacted>:***`, allowlist <chat-id-redacted>)
+- JUMA ↔ OpenClaw: Telegram (bot token `<bot-id-redacted>:***`, allowlist <chat-id-redacted>)
 - Hermes → ClickUp: REST API (`api.clickup.com`, token from Hermes `.env`)
 - Hermes → Gemini: REST API (`generativelanguage.googleapis.com`, key from Hermes `.env`)
 - Hermes → GitHub: `gh` CLI (authenticated via Windows credential manager)
@@ -239,13 +239,13 @@ Input
   Channel: Telegram → @bukomaopenclawbot
 
 → Agent routing
-  OpenClaw receives inbound update (chatId 1360833951, allowed by allowlist)
+  OpenClaw receives inbound update (chatId <chat-id-redacted>, allowed by allowlist)
   Routes to agent "main" → model "openrouter/upstage/solar-pro4"
   OpenAI-completions API to OpenRouter (https://openrouter.ai/api/v1/chat/completions)
 
 → Tool execution
   - OpenRouter API: HTTP 200, model upstage/solar-pro4, latency ~5.8s
-  - Telegram send: message delivered to chatId 1360833951 (messageId 29)
+  - Telegram send: message delivered to chatId <chat-id-redacted> (messageId 29)
 
 → Outputs
   - Telegram reply: "I'm Solar Pro4, a large language model trained by Upstage AI. KEY_OK"
@@ -367,7 +367,7 @@ generate-proposal.ps1
 
 ### Access control
 
-- Both Telegram bots allowlist only user ID 1360833951
+- Both Telegram bots allowlist only user ID <chat-id-redacted>
 - OpenClaw gateway binds to 127.0.0.1 (loopback only, not network-exposed)
 - OpenClaw gateway requires auth token for API access
 - ClickUp token passed via env var (not hardcoded)
@@ -386,14 +386,14 @@ generate-proposal.ps1
 ### Already configured (no action needed)
 
 1. **Hermes `.env`** (`C:\Users\HP\AppData\Local\hermes\.env`):
-   - `TELEGRAM_BOT_TOKEN=8917859111:***`
+   - `TELEGRAM_BOT_TOKEN=<bot-id-redacted>:***`
    - `GEMINI_API_KEY=AQ.Ab...` (full key set)
    - `CLICKUP_TOKEN=pk_240010007_...` (full token set)
    - `GEMINI_CLI_TRUST_WORKSPACE=true`
 
 2. **OpenClaw config** (`C:\Users\HP\.openclaw\openclaw.json`):
    - Primary model: `openrouter/upstage/solar-pro4`
-   - Telegram channel: bot token `8845344838:***`, allowlist `[1360833951]`
+   - Telegram channel: bot token `<bot-id-redacted>:***`, allowlist `[<chat-id-redacted>]`
    - Auth profile: OpenRouter API key in state DB
    - Gateway port: 18789, bind: loopback
 

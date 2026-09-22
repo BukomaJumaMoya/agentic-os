@@ -113,7 +113,7 @@ Every claim in the repository was treated as potentially false. Implementation w
 ### Q. Secret Handling
 - **Severity:** HIGH
 - **Status:** PARTIAL
-- **Evidence:** No raw secrets in implementation files. Documentation contains redacted references (`AQ.Ab...`, `pk_240010007_...`, `8917859111:***`). These are not raw secrets but provide enough context for targeted attacks.
+- **Evidence:** No raw secrets in implementation files. Documentation contains redacted references (`AQ.Ab...`, `pk_240010007_...`, `<bot-id-redacted>:***`). These are not raw secrets but provide enough context for targeted attacks.
 - **Fix:** Remove specific token references from documentation, leaving only variable names.
 
 ### R. Prompt-Injection Resistance

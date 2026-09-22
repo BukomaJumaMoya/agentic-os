@@ -7,7 +7,7 @@
 
 ## 1. ORCHESTRATION ROLE
 
-Hermes is the **sole orchestrator**. Every user request enters through Hermes (Telegram bot `8917859111:XXX` or CLI). Hermes decides:
+Hermes is the **sole orchestrator**. Every user request enters through Hermes (Telegram bot `<bot-id-redacted>:XXX` or CLI). Hermes decides:
 - Whether the request can be handled directly with its built-in tools
 - Whether it needs a specialist capability (Gemini for code, ClickUp for projects, OpenClaw for model fallback)
 - Which tool/capability to use
@@ -143,7 +143,7 @@ Hermes uses OpenClaw as a **fallback model path**, NOT as a primary routing step
 
 **How OpenClaw is invoked:**
 - OpenClaw API: `http://127.0.0.1:18789/` (gateway auth token required).
-- OpenClaw Telegram: message `@bukomaopenclawbot` (bot token `8845344838:XXX`, allowlist 1360833951).
+- OpenClaw Telegram: message `@bukomaopenclawbot` (bot token `<bot-id-redacted>:XXX`, allowlist <chat-id-redacted>).
 - OpenClaw's model: Solar Pro4 via OpenRouter (key verified live; model `openrouter/upstage/solar-pro4` in OpenClaw config).
 
 **What Hermes does NOT delegate to OpenClaw:**

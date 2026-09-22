@@ -174,12 +174,26 @@ def add_agents_to_cli(text: str) -> tuple[str, str]:
     current = [l.strip()[2:] for l in lines[start + 1:end]]
     agents = list(AGENT_SPEC)
     missing = [t for t in agents if t not in current]
-    if not missing:
+
+    # mcp-research/mcp-pm/mcp-coding are neither MCP server names nor toolset
+    # names. They resolve to nothing, which is how the whole surface came open:
+    # a platform list naming no REAL server makes _merge_mcp_servers() fall back
+    # to "merge every enabled server", and one of those collided with a built-in.
+    # They are dead on the cli list too, and dead entries that read like grants
+    # are exactly what nobody should have to re-derive next time.
+    dead = [t for t in current if t.startswith("mcp-")]
+
+    if not missing and not dead:
         return text, "SKIP: cli already has the agent toolsets"
 
-    merged = sorted(set(current) | set(agents))
+    merged = sorted((set(current) | set(agents)) - set(dead))
     new = lines[:start + 1] + [f"    - {t}\n" for t in merged] + lines[end:]
-    return "".join(new), f"ADDED to cli: {', '.join(missing)}"
+    changes = []
+    if missing:
+        changes.append(f"added {', '.join(missing)}")
+    if dead:
+        changes.append(f"removed dead {', '.join(sorted(dead))}")
+    return "".join(new), "CLI: " + "; ".join(changes)
 
 
 def main() -> int:

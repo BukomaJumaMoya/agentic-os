@@ -1,0 +1,33 @@
+{
+  "_": [
+    "Every tool that may reach the Telegram surface, and who owns it.",
+    "One entry per tool: the value is the MCP server that provides it, or",
+    "'hermes-builtin' for a tool Hermes itself provides. The per-server",
+    "tools.include lists in config.yaml are derived from this file by grouping,",
+    "so there is exactly one place a tool is declared and no second list to drift.",
+    "",
+    "check_telegram_surface.py reads this on every gateway start and refuses to",
+    "start when config.yaml and this file disagree, in either direction.",
+    "Adding a tool to an agent means editing this file. That is the point.",
+    "",
+    "Derived 2026-09-22 from the verified surface: config.yaml mcp_servers",
+    "tools.include, plus the three built-ins Hermes' own resolver reported",
+    "('telegram surface clean: 3 built-in tool(s)')."
+  ],
+  "telegram_allowed_users_sha256": "852889e698b302eb882b0d5739eec3e0840fa7434d8124d92fb92b8fe6983320",
+  "tools": {
+    "clarify": "hermes-builtin",
+    "memory": "hermes-builtin",
+    "session_search": "hermes-builtin",
+
+    "research": "research",
+
+    "pm_query": "pm",
+    "pm_action": "pm",
+
+    "start_code_task": "coding_agent",
+    "get_status": "coding_agent",
+    "get_result": "coding_agent",
+    "list_changed_files": "coding_agent"
+  }
+}

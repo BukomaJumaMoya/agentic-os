@@ -87,7 +87,7 @@ Separate, unconnected execution island (nothing above calls into it):
 
 There are **four** boundaries where a trust decision should happen. Three of them have no check at all:
 
-1. **Telegram → OpenClaw** — allowlist `1360833951` (published in README). Enforcement is in OpenClaw's config, outside this repo. **Unverifiable here.** This is the only authentication in the whole system.
+1. **Telegram → OpenClaw** — allowlist `<chat-id-redacted>` (published in README). Enforcement is in OpenClaw's config, outside this repo. **Unverifiable here.** This is the only authentication in the whole system.
 2. **Any local process → router `:18790`** — **no authentication, no origin check, no host check, no token.** Proven below.
 3. **Orchestrator → agent subprocess** — no validation of payload beyond a per-agent action allowlist; the coding agent's path/filename fields are unvalidated.
 4. **Human → approval decision** — **no identity binding whatsoever.** `approver` is a free-text string that defaults to `"human"`.
@@ -189,7 +189,7 @@ An attacker who can rank for a query the user is likely to research (or who owns
 So I can only report what is verifiable, and flag what is not:
 
 **Verifiable:**
-- `README.md` publishes both bot IDs (`8917859111`, `8845344838`) and the allowlisted chat ID (`1360833951`) in a public repository. Bot IDs are the numeric prefix of bot tokens; publishing them plus the sole authorized chat ID hands an attacker the exact target set and confirms that a single value is the entire authentication boundary.
+- `README.md` publishes both bot IDs (`<bot-id-redacted>`, `<bot-id-redacted>`) and the allowlisted chat ID (`<chat-id-redacted>`) in a public repository. Bot IDs are the numeric prefix of bot tokens; publishing them plus the sole authorized chat ID hands an attacker the exact target set and confirms that a single value is the entire authentication boundary.
 - `documentation/FINAL-BUILD-REPORT.md` and the README both record that the OpenClaw Telegram bot token returns **HTTP 401** — i.e. Telegram end-to-end has never actually worked, and every "PASS" in the phase reports covering this path is therefore untested.
 - README concedes: *"Approval UI is filesystem-based; no Telegram prompt delivery yet"* and *"External action execution is boundary-recorded only; not wired"*.
 

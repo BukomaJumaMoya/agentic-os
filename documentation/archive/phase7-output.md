@@ -42,7 +42,7 @@
 ```
 [clickup] POST /list/1200430000004210/task -> 201  (taskId=123t3hvmy45)
 [gemini] generateContent gemini-3.6-flash -> 200  (chars=4909, tokens=122)
-[openclaw] telegram outbound send ok  (chatId=1360833951, messageId=41)
+[openclaw] telegram outbound send ok  (chatId=<chat-id-redacted>, messageId=41)
 [proposal] STAGE 2: Gemini draft generated (4909 chars)
 [proposal] STAGE 4: ClickUp task created: ID=123t3hvmy45
 ```

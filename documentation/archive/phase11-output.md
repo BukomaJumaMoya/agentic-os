@@ -109,7 +109,7 @@
 
 ### ✅ 20. Hermes gateway (running)
 **Status:** COMPLETE and VERIFIED
-**Evidence:** PID 32300, Telegram bot `8917859111:***` working, allowlist 1360833951, Solar Pro4 via Nous Portal OAuth.
+**Evidence:** PID 32300, Telegram bot `<bot-id-redacted>:***` working, allowlist <chat-id-redacted>, Solar Pro4 via Nous Portal OAuth.
 
 ---
 
@@ -165,8 +165,8 @@ The following items from the directive are explicitly out of scope for this deli
 
 ## What's Operational Right Now
 
-1. **Hermes** — running, Telegram-connected, Solar Pro4 via Nous Portal OAuth, allowlist 1360833951
-2. **OpenClaw** — running, Telegram-connected (`@bukomaopenclawbot`), Solar Pro4 via OpenRouter, allowlist 1360833951
+1. **Hermes** — running, Telegram-connected, Solar Pro4 via Nous Portal OAuth, allowlist <chat-id-redacted>
+2. **OpenClaw** — running, Telegram-connected (`@bukomaopenclawbot`), Solar Pro4 via OpenRouter, allowlist <chat-id-redacted>
 3. **ClickUp** — Freelance space with Clients/Projects/Tasks lists, API wrapper working, tasks creatable via wrapper
 4. **Gemini** — API key valid, models accessible, used by proposal automation
 5. **GitHub** — `gh` authenticated, `BukomaJumaMoya/agentic-os` repo receiving pushes

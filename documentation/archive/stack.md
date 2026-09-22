@@ -9,9 +9,9 @@
 
 | Component | Installed | Authenticated | Verified Call | Notes |
 |---|---|---|---|---|
-| **Telegram** | YES — Hermes bot `8917859111:XXX` + OpenClaw bot `8845344838:XXX` | YES — allowlist `[1360833951]` on both bots | YES — Hermes reply confirmed (session `20260904_100756_253d81af`); OpenClaw KEY_OK reply confirmed (inbound 12:46:31, OpenRouter 200 at 12:46:38, TG delivery at 12:46:41) | Two separate bots; both restricted to user 1360833951; Hermes via Nous Portal OAuth, OpenClaw via OpenRouter key |
-| **Hermes agent** | YES — Gateway running; primary model from config is `stepfun/step-3.7-flash:free` via Nous provider (`https://inference-api.nousresearch.com/v1`); scheduled task `Hermes_Gateway` | YES — Hermes auth via Nous provider | YES — Telegram reply confirmed; session `20260904_100756_253d81af` | Sole orchestrator agent; Telegram allowlist 1360833951; built-in tools (web_search, web_extract, browser_exec, delegation, skills) |
-| **OpenClaw agent** | YES — v2026.9.1; gateway `127.0.0.1:18789`; scheduled task `OpenClaw Gateway` (At-logon trigger) | YES — OpenRouter API key; primary model `openrouter/upstage/solar-pro4` | YES — Telegram KEY_OK reply; inbound 12:46:31 → OpenRouter 200 at 12:46:38 → TG delivery at 12:46:41 | Fallback model path for Hermes; Telegram channel `@bukomaopenclawbot` allowlisted 1360833951; native Windows gateway (not WSL); companion desktop app available but not wired to this gateway |
+| **Telegram** | YES — Hermes bot `<bot-id-redacted>:XXX` + OpenClaw bot `<bot-id-redacted>:XXX` | YES — allowlist `[<chat-id-redacted>]` on both bots | YES — Hermes reply confirmed (session `20260904_100756_253d81af`); OpenClaw KEY_OK reply confirmed (inbound 12:46:31, OpenRouter 200 at 12:46:38, TG delivery at 12:46:41) | Two separate bots; both restricted to user <chat-id-redacted>; Hermes via Nous Portal OAuth, OpenClaw via OpenRouter key |
+| **Hermes agent** | YES — Gateway running; primary model from config is `stepfun/step-3.7-flash:free` via Nous provider (`https://inference-api.nousresearch.com/v1`); scheduled task `Hermes_Gateway` | YES — Hermes auth via Nous provider | YES — Telegram reply confirmed; session `20260904_100756_253d81af` | Sole orchestrator agent; Telegram allowlist <chat-id-redacted>; built-in tools (web_search, web_extract, browser_exec, delegation, skills) |
+| **OpenClaw agent** | YES — v2026.9.1; gateway `127.0.0.1:18789`; scheduled task `OpenClaw Gateway` (At-logon trigger) | YES — OpenRouter API key; primary model `openrouter/upstage/solar-pro4` | YES — Telegram KEY_OK reply; inbound 12:46:31 → OpenRouter 200 at 12:46:38 → TG delivery at 12:46:41 | Fallback model path for Hermes; Telegram channel `@bukomaopenclawbot` allowlisted <chat-id-redacted>; native Windows gateway (not WSL); companion desktop app available but not wired to this gateway |
 | **Gemini CLI / API** | YES — `gemini` CLI v0.58.0 globally installed (`npm i -g @google/gemini-cli`); `gemini-3.6-flash` model available | YES — `GEMINI_API_KEY` set in Hermes `.env` (key starts `AQ.Ab...`, full value redacted for git); `GEMINI_CLI_TRUST_WORKSPACE=true` set | YES — curl to `generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent` → HTTP 200, real response text returned (earlier test: `FULLY AUTHENTICATED AND READY TO WORK`) | CLI runtime has startup hang in headless mode (grep/tooling init or interactive-mode detection); API verified working non-interactively → **use curl/Node API directly for automation**; CLI usable in interactive mode with `--skip-trust`; **PRIMARY CODING AGENT** (Copilot substituted) |
 | **ClickUp** | NO CLI — no maintained ClickUp CLI exists; abandoned `clickup` npm package (0.0.1, 2018) not installed | YES — `CLICKUP_TOKEN` set in Hermes `.env` (token starts `pk_240010007_...`, full value redacted for git) | YES — curl `api.clickup.com/api/v2/team` → HTTP 200, workspace "Juma Moya's Workspace" returned, user Juma Moya (ID 240010007) owner | Integration via **REST API**; token persisted in Hermes `.env`; wrapper script to be written in Phase 1/2; no CLI substitute needed |
 | **GitHub CLI (`gh`)** | YES — `gh` 2.100.0; winget-installed; bash PATH wired via `~/.bashrc` (MSI installer doesn't register into MSYS bash PATH) | YES — PAT applied via `gh auth login --with-token`; logged in as **BukomaJumaMoya** | YES — `gh repo list` → 14 repos including `fraine-fresh-start`, `Data-Entry-Automation-Tool`, `Rotaract-Registration-App`, `learneasy` | OAuth persistence **broken** on this Windows/bash setup (token never writes to `~/.config/gh/`); PAT approach resolves it; token scopes: `repo`, `read:org`, `copilot`, `workflow`, `gist`, `notifications`, `project`, `admin:org`, `admin:repo_hook`, `delete:packages`, `write:packages`, `codespace`, `audit_log` |
@@ -27,7 +27,7 @@
 *Non-exhaustive. Verified present; values NOT printed in this file.*
 
 ### Hermes secrets (`C:\Users\HP\AppData\Local\hermes\.env`)
-- `TELEGRAM_BOT_TOKEN` — Hermes Telegram bot token (allowlist 1360833951)
+- `TELEGRAM_BOT_TOKEN` — Hermes Telegram bot token (allowlist <chat-id-redacted>)
 - `GEMINI_API_KEY` — Google Gemini API key (set this session; `AQ.Ab...`)
 - `GEMINI_CLI_TRUST_WORKSPACE=true` — set this session for non-interactive CLI use
 - `CLICKUP_TOKEN` — ClickUp API token (set this session; `pk_240010007_...`)
@@ -35,7 +35,7 @@
 
 ### OpenClaw secrets
 - `C:\Users\HP\.openclaw\openclaw.json` → `auth.profiles.openrouter:default` (key value in state DB `openclaw.sqlite` → `config_machine_state.authProfiles.store` AND agent DB `openclaw-agent.sqlite`)
-- `channels.telegram.dmPolicy: "allowlist"`, `channels.telegram.allowFrom: ["1360833951"]`
+- `channels.telegram.dmPolicy: "allowlist"`, `channels.telegram.allowFrom: ["<chat-id-redacted>"]`
 - Gateway auth token (`c5e8c32e050a...663111`) — used for Control UI / API auth
 
 ### GitHub
@@ -47,8 +47,8 @@
 
 | Component | Role | Why This Component | Connects To |
 |---|---|---|---|
-|| **Hermes** | **Sole orchestrator** — receives user input, decides routing, delegates to specialist agents | Current configured model: `stepfun/step-3.7-flash:free` via Nous provider; Telegram + CLI interface; built-in tools (web_search, web_extract, browser_exec, delegation); scheduled task for persistence | Telegram (allowlist 1360833951), OpenClaw (model access fallback), Gemini API (coding/research), ClickUp API (projects), GitHub CLI (repos) |
-| **OpenClaw** | **Fallback model path** — provides Solar Pro4 via OpenRouter; Telegram channel; gateway on 127.0.0.1:18789; NOT a routing intermediary | Path of least resistance for Solar Pro4 access; separate from Hermes; native Windows gateway; scheduled task for reboot persistence; resilience if Nous Portal unavailable | OpenRouter (API key), Telegram (`@bukomaopenclawbot`, allowlist 1360833951), Hermes (peer via API — routing NOT configured) |
+|| **Hermes** | **Sole orchestrator** — receives user input, decides routing, delegates to specialist agents | Current configured model: `stepfun/step-3.7-flash:free` via Nous provider; Telegram + CLI interface; built-in tools (web_search, web_extract, browser_exec, delegation); scheduled task for persistence | Telegram (allowlist <chat-id-redacted>), OpenClaw (model access fallback), Gemini API (coding/research), ClickUp API (projects), GitHub CLI (repos) |
+| **OpenClaw** | **Fallback model path** — provides Solar Pro4 via OpenRouter; Telegram channel; gateway on 127.0.0.1:18789; NOT a routing intermediary | Path of least resistance for Solar Pro4 access; separate from Hermes; native Windows gateway; scheduled task for reboot persistence; resilience if Nous Portal unavailable | OpenRouter (API key), Telegram (`@bukomaopenclawbot`, allowlist <chat-id-redacted>), Hermes (peer via API — routing NOT configured) |
 | **Gemini CLI / API** | **Primary coding agent** — code generation, analysis, local dev assistance; Copilot substituted | Installed v0.58.0; API verified live (HTTP 200); `gemini-3.6-flash` available; free tier via API key; CLI has headless hang — API is reliable automation path | Gemini API (generativelanguage.googleapis.com), Hermes (delegated capability) |
 | **ClickUp** | Project/task management — task creation, status tracking, roadmap; API-only (no CLI) | REST API verified live (HTTP 200, workspace returned); no CLI exists; API token in Hermes `.env`; correct integration path | ClickUp API (api.clickup.com), Hermes (delegated capability via wrapper script) |
 | **GitHub CLI (`gh`)** | Repository operations — repo inspection, PRs, issues, branches | Installed 2.100.0; authenticated as BukomaJumaMoya; 14 repos visible; PAT approach resolves OAuth persistence bug | GitHub API (api.github.com), Hermes (delegated capability), local git |
@@ -92,7 +92,7 @@ Specialist branches: Research/Projects (ClickUp), Coding (Gemini CLI/Copilot CLI
 
 **Connection 1: Telegram → OpenClaw → Hermes — LOCKED FOR IMPLEMENTATION**
 
-- Current actual state: Hermes bot `8917859111:XXX` and OpenClaw bot `8845344838:XXX` both receive Telegram messages independently.
+- Current actual state: Hermes bot `<bot-id-redacted>:XXX` and OpenClaw bot `<bot-id-redacted>:XXX` both receive Telegram messages independently.
 - Target state per locked decisions: Telegram → OpenClaw → Hermes using a custom OpenClaw tool that invokes `hermes chat -q`.
 - This means Hermes direct Telegram bot should become secondary/non-primary once routing is implemented.
 
@@ -131,7 +131,7 @@ Hermes (Chief Agent) ───────────────────�
      │                                                                           │
      ├─→ Coding (Gemini CLI / Gemini API → code → gh → git) ────────────────────┤ ← Gemini (API key in Hermes .env); GitHub (PAT via gh)
      │                                                                           │
-     └─→ Model fallback (OpenClaw → OpenRouter → Solar Pro4) ────────────────────┤ ← OpenClaw (gateway 127.0.0.1:18789; OpenRouter key; TG @bukomaopenclawbot allowlist 1360833951)
+     └─→ Model fallback (OpenClaw → OpenRouter → Solar Pro4) ────────────────────┤ ← OpenClaw (gateway 127.0.0.1:18789; OpenRouter key; TG @bukomaopenclawbot allowlist <chat-id-redacted>)
                                                                               │
                                             Hermes primary model: Solar Pro4 via Nous Portal OAuth
 ```
@@ -184,8 +184,8 @@ Hermes (Chief Agent) ───────────────────�
 
 | From | To | Mechanism | Auth | Status |
 |---|---|---|---|---|
-| User → Hermes TG bot | Telegram API | Bot token `8917859111:XXX` + allowlist `[1360833951]` | ✅ Working |
-| User → OpenClaw TG bot | Telegram API | Bot token `8845344838:XXX` + allowlist + dmPolicy allowlist | ✅ Working (secondary channel) |
+| User → Hermes TG bot | Telegram API | Bot token `<bot-id-redacted>:XXX` + allowlist `[<chat-id-redacted>]` | ✅ Working |
+| User → OpenClaw TG bot | Telegram API | Bot token `<bot-id-redacted>:XXX` + allowlist + dmPolicy allowlist | ✅ Working (secondary channel) |
 | Hermes → Solar Pro4 (Nous Portal) | Nous Portal OAuth | OAuth (Nous Portal) | ✅ Working |
 | Hermes → ClickUp | REST API (api.clickup.com) | Token `pk_240010007_...` in Hermes `.env` | ✅ Auth; wrapper not written |
 | Hermes → Gemini API | REST API (generativelanguage.googleapis.com) | Key `AQ.Ab...` in Hermes `.env` | ✅ Auth; verified live (HTTP 200) |
@@ -194,7 +194,7 @@ Hermes (Chief Agent) ───────────────────�
 | Hermes → Git (local) | git CLI (2.50.1) | Local (user.name/email configured) | ✅ Working |
 | Hermes → OpenClaw (fallback) | OpenClaw API (127.0.0.1:18789) | Gateway auth token `c5e8c32e050a...663111` | ⚠️ Gateway running; routing NOT configured |
 | OpenClaw → Solar Pro4 (OpenRouter) | OpenRouter API (api.openrouter.ai) | Key in `openclaw.json` + state DB + agent DB | ✅ Working (verified: OpenRouter 200 at 12:46:38) |
-| OpenClaw → Telegram | Telegram API (bot token `8845344838:XXX`) | Bot token + allowlist | ✅ Working |
+| OpenClaw → Telegram | Telegram API (bot token `<bot-id-redacted>:XXX`) | Bot token + allowlist | ✅ Working |
 | Gemini CLI → Gemini API | REST API (generativelanguage.googleapis.com) | API key (env) | ✅ Auth; CLI headless mode has hang; API is reliable path |
 | Turso CLI → Turso Cloud | turso CLI (optional) | Not logged in | ⚠️ Optional; not configured |
 

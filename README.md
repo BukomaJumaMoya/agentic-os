@@ -47,8 +47,9 @@ Split deliberately, because the free tiers fail in different ways:
 |---|---|---|
 | Provider | Gemini (Google AI Studio) | Groq |
 | Model | `gemini-3.5-flash-lite` | `openai/gpt-oss-120b` |
-| Fallback | OpenRouter `nvidia/nemotron-3.5-lightning:free` | OpenRouter |
-| Limit that binds | requests/minute | 8,000 tokens/minute |
+| Fallback 1 | Gemini `gemini-3.1-flash-lite` | OpenRouter |
+| Fallback 2 | OpenRouter `nvidia/nemotron-3-ultra-550b-a55b:free` | — |
+| Limit that binds | 250,000 input tokens/**day**, per model | 8,000 tokens/minute |
 
 Hermes cannot run on Groq. Its Telegram tool surface measures ~6,900 tokens per
 model call, a routing turn needs at least two calls, and every tool-capable Groq
@@ -58,11 +59,85 @@ The arithmetic and the measurements are in `hermes/configure_providers.py`.
 
 OpenRouter ran Hermes for a while and works, but its free tier allows 50
 requests per **day**, account-wide — roughly a dozen routing turns, after which
-the orchestrator is down until 00:00 UTC. It is a sound fallback and a poor
-primary, so that is where it sits now.
+the orchestrator is down until 00:00 UTC. It is a sound last resort and a poor
+primary, so that is where it sits now: fallback 2, behind a second Gemini model.
 
-Gemini's free tier meters requests per **minute**, which recovers in seconds.
-Model choice within it is not free either, measured on this key:
+The model on that tier changed from `nvidia/nemotron-3.5-lightning:free` to
+`nvidia/nemotron-3-ultra-550b-a55b:free`, on evidence rather than benchmarks.
+Lightning carried two live turns during end-to-end testing and misreported in
+both: it told the operator a program had been run that the coding agent's own
+log shows was never executed, and it appended two unrelated sentences about
+compliance workflows to a report about a text file. Both are in
+`documentation/E2E-RESULTS.md`. A fallback that answers confidently and wrongly
+is worse than one that is unavailable, because the unavailable one is visible.
+
+Each tier is proven, not assumed — one real routing turn each, forced by
+breaking the tier above it:
+
+| tier | forced how | served by | result |
+|---|---|---|---|
+| primary | nothing broken | `gemini/gemini-3.5-flash-lite` | 2 api calls, real ClickUp data |
+| fallback 1 | primary model → a name that 404s | `gemini/gemini-3.1-flash-lite` | 2 api calls, real ClickUp data |
+| fallback 2 | both Gemini tiers 404ing | `openrouter/nvidia/nemotron-3-ultra-550b-a55b:free` | 2 api calls, real ClickUp data |
+
+### `reasoning_effort: "none"` and the provider entry that does nothing
+
+`transports/chat_completions.py` encodes "thinking off" as reasoning effort
+`"none"`, which is not in the vocabulary Gemini or Groq accept — they return
+HTTP 400. The workaround in the config was
+`providers.groq.extra_body.reasoning_effort: medium`.
+
+**That entry never did anything.** `agent_init._custom_provider_extra_body_for_agent()`
+returns `None` unless the provider name is `custom` or `custom:<key>`, so a
+`providers.<builtin>.extra_body` block is silently ignored. Measured on a forced
+OpenRouter turn:
+
+```
+Fallback nvidia/nemotron-3-ultra-550b-a55b:free: reasoning_config resolved: {'enabled': True, 'effort': 'medium'}
+Fallback nvidia/nemotron-3-ultra-550b-a55b:free: extra_body resolved: None
+```
+
+The turn still completed with a tool call and no 400 — because what actually
+keeps `"none"` off the wire is `agent.reasoning_effort: medium`, resolved on a
+different path entirely. So the dead entry is gone, and the live value is
+asserted in `configure_gemini.py` instead of assumed. A control that reads as
+present and is not is the same failure this repository already had once.
+
+Gemini's free tier meters requests per **minute**, which recovers in seconds —
+and that was the whole reason for choosing it. **It was not the whole story,
+and the part that was missing is the part that binds.** The live end-to-end run
+produced this, mid-turn, on a routing task:
+
+```
+429 RESOURCE_EXHAUSTED: Quota exceeded for metric:
+generativelanguage.googleapis.com/generate_content_free_tier_input_token_count,
+limit: 250000, model: gemini-3.5-flash-lite
+```
+
+The free tier meters **both**, and the second one is a *daily* input-token cap.
+One measured routing turn costs 13,161 input tokens, so 250,000 is about
+nineteen turns a day. A per-minute limit recovers while you wait; this one does
+not come back until the day rolls over.
+
+That is what actually took the orchestrator off its primary during testing —
+two of five live turns finished on the fallback — and it is why there are now
+two fallback tiers rather than one. A single OpenRouter tier behind Gemini is
+not depth: OpenRouter's free tier is 50 requests per **day**, account-wide, so
+both run out on the same afternoon.
+
+**The quota is per model.** The 429 names the model inside the metric, so a
+different Gemini model is a different 250k bucket on the same key — at no cost
+and with no new credential. That is what fallback 1 is. Measured on this key:
+
+| model | function calling | verdict |
+|---|---|---|
+| `gemini-3.1-flash-lite` | HTTP 200, `tool_calls=1` | fallback 1; 1M context, own quota bucket |
+| `gemini-2.5-flash-lite` | HTTP 404 | "no longer available to new users" |
+
+Not `gemini-flash-lite-latest` and not a `-preview` suffix: an alias can move
+under a running gateway, which is the same reason the sandbox pins RTK.
+
+Model choice within the tier is not free either, measured on this key:
 
 | model | free-tier limit | verdict |
 |---|---|---|
@@ -162,7 +237,10 @@ agents/research/    Tavily research, read only
 agents/pm/          ClickUp, no delete
 agents/coding/      Pi coding agent, Docker-sandboxed
 hermes/             the Hermes-side configuration, kept in the repo because
-                    `hermes update` stashes local changes to its checkout
+                    `hermes update` stashes local changes to its checkout.
+                    surface-manifest.json is the tool allowlist; SOUL.md is the
+                    tracked copy of ~/.hermes/SOUL.md; post_update.py runs the
+                    rest and proves it
 tools/              logging_proxy.py — sits between Hermes and a provider and
                     records what is actually sent; --sink answers locally so a
                     tool surface can be inspected without spending quota
@@ -179,15 +257,40 @@ agents/.venv/Scripts/pip install -r requirements.txt
 docker build -t juma-pi-sandbox:1 agents/coding      # sandbox for the coding agent
 (cd agents/coding/vendor && npm install)              # the Pi coding agent
 
-python hermes/apply_approval_patch.py       # re-run after every `hermes update`
-python hermes/harden_telegram_surface.py    # re-run after every `hermes update`
-python hermes/configure_providers.py
-python hermes/configure_orchestrator.py
+python hermes/post_update.py                 # everything below, then proves it
 ```
 
-Both patched scripts edit the Hermes checkout, and `hermes update` stashes
-local changes silently. Re-running them is the only thing that makes either
-patch durable.
+### After every `hermes update`, run one command
+
+```bash
+python hermes/post_update.py
+```
+
+Hermes is a git checkout and `update` pulls into it with
+`non_interactive_local_changes: stash`, so **every local change to it is
+temporary by default**. Two of the five invariants live inside that checkout —
+the approval patch and the in-process guard — and a third, the launcher, lives
+in a file `hermes gateway install` regenerates from a template. All three are
+one update away from silently not existing, and that has already happened once.
+
+`post_update.py` re-applies all of it and then proves it, in this order:
+
+| step | |
+|---|---|
+| 1 | `configure_orchestrator.py` — MCP servers and include lists |
+| 2 | `harden_telegram_surface.py` — Telegram allowlist + in-process guard |
+| 3 | `configure_gemini.py restore` — model chain, reasoning-effort assertion |
+| 4 | `apply_approval_patch.py` — secret-store reads require approval |
+| 5 | `gateway_launcher.py --install` — the task reaches the guard |
+| 6 | `check_telegram_surface.py` — all six conditions, under Hermes' interpreter |
+| 7 | `tests/test_surface_guard.py` — the negative tests |
+
+6 before 7 on purpose: 6 says the machine is in the right state, 7 says the
+check that decided that is still capable of saying no. **A green 6 with a
+broken 7 is the failure that matters, because it looks exactly like success.**
+
+The individual scripts still exist and are still idempotent; `post_update.py`
+is the thing to actually run.
 
 Each agent needs its own `agents/<name>/.env` (gitignored). Key names only:
 
@@ -286,8 +389,69 @@ It fails closed in both directions: if the check cannot be imported or raises,
 the gateway does not start. An unprovable boundary is treated as a breached one.
 
 Like the approval patch, this edits the Hermes checkout, so **re-run it after
-every `hermes update`**. `hermes/check_telegram_surface.py` runs the same check
-on its own, under Hermes' interpreter.
+every `hermes update`** — or just run `python hermes/post_update.py`, which
+re-applies everything and proves it.
+
+### The guard checks six things, not one
+
+A clean tool surface is necessary and nowhere near sufficient, so
+`hermes/check_telegram_surface.py` now refuses the start on any of:
+
+| # | condition | why it is fatal |
+|---|---|---|
+| 1 | a tool outside the manifest is on the wire | the original defect |
+| 2 | the approval patch is missing | `hermes update` stashed it once already |
+| 3 | `command_allowlist` is non-empty | every entry runs without asking |
+| 4 | the Telegram allow-list is not exactly the one user | it is the entire authentication boundary |
+| 5 | an MCP `tools.include` disagrees with the manifest | an agent grew a tool nobody declared |
+| 6 | a surface tool has no owner in the manifest | something arrived from outside the model |
+
+All six fail closed, and **a check that raises counts as failed** — an
+unprovable boundary is treated as a breached one.
+
+Condition 4 compares a **SHA-256**, not the ID. The ID is the whole
+authentication boundary and this is a public repository, so the manifest pins
+`telegram_allowed_users_sha256` and the value itself is never written down. A
+changed ID still fails the check.
+
+### `hermes/surface-manifest.json`
+
+Every tool that may reach the Telegram surface, with its owner — one entry per
+tool, the value being the MCP server that provides it or `hermes-builtin`. The
+per-server `tools.include` lists are *derived* from it by grouping, so a tool is
+declared in exactly one place and there is no second list to drift.
+
+Adding a tool to an agent is therefore two edits on purpose: the agent's
+`tools.include`, and the manifest. Conditions 5 and 6 compare them on every
+start, in both directions.
+
+### A refusal used to be silent
+
+The guard worked and nobody could tell. It logs its verdict at INFO and
+CRITICAL from inside `start_gateway()`, which runs **before Hermes attaches its
+file handlers** — so neither line appears in `gateway.log`, at any start, ever.
+Checked directly; there are no matches in the file.
+
+That left the worst available failure mode: the gateway refuses, exits
+non-zero, Task Scheduler retries and gives up, and the first symptom is that
+Telegram has gone quiet — indistinguishable from a flat phone battery.
+
+`hermes/gateway_launcher.py` runs the guard *in front of* the gateway, so the
+reporter outlives the verdict, and announces it on three channels:
+
+| channel | note |
+|---|---|
+| Telegram | one fixed text, naming no tool, key or value — it goes to a phone, and the premise is that the surface may be open |
+| Windows Event Log | Application / `Hermes_Gateway`, id 101 on refusal, 100 on pass |
+| `logs/gateway-guard.log` | always works; the other two can be unregistered or offline |
+
+Proven by breaking condition 3 for real: the guard refused, `telegram: sent`,
+the gateway did not start, exit 1, and the Python process count was unchanged.
+
+The in-process guard **stays**. It is not redundant — it covers
+`hermes gateway start/restart` and embedded callers, none of which come through
+the launcher. The launcher covers the scheduled task, which is the only route
+that runs unattended.
 
 ## The approval patch
 
@@ -309,10 +473,20 @@ stashes local changes, so the previous patch vanished silently — the verdict f
 
 ```bash
 agents/.venv/Scripts/python tests/test_common_scaffold.py
+agents/.venv/Scripts/python tests/test_surface_guard.py    # the guard's NEGATIVE tests
 agents/.venv/Scripts/python tests/test_research_agent.py   # --live for a real search
 agents/.venv/Scripts/python tests/test_pm_agent.py         # --live hits real ClickUp
 agents/.venv/Scripts/python tests/test_coding_agent.py     # --live runs Pi
 ```
+
+263 assertions, 0 failing, as of 2026-09-22.
+
+`test_surface_guard.py` is deliberately all negatives. The guard returning OK on
+a healthy machine proves almost nothing — a function that returns `(True, "")`
+unconditionally passes that test too. So each of the six conditions gets a
+deliberately broken input, and each is asserted to fail *and* to say why. None
+of it edits config.yaml or the Hermes checkout: a test that has to break the
+running system will eventually be run by someone who forgets to put it back.
 
 The agents are exercised over real MCP stdio, not by importing their functions:
 that is the only way to catch a server that fails to start, a malformed tool
@@ -321,3 +495,67 @@ schema, or a stray `print()` corrupting the JSON-RPC stream.
 The security properties are the majority of the suite on purpose. "It works" is
 cheap to re-establish; "it cannot escape" has to be re-established on every
 change.
+
+## Operations
+
+```bash
+python hermes/post_update.py                  # after every `hermes update`
+python hermes/check_keys.py                   # is every credential still alive?
+python hermes/redact_docs.py --check          # anything exposed in documentation/?
+python hermes/gateway_launcher.py --check     # the guard, without starting anything
+python hermes/gateway_launcher.py --test-alert # prove the refusal alert still works
+```
+
+### `check_keys.py`
+
+One authenticated read-only call per credential, in every `.env`, reporting a
+verdict per key **name**. Never a value — not a prefix, not a suffix, not four
+characters "for identification". Lengths are printed, because a 12-character key
+is a truncated paste and that is a different problem from a rejected one.
+
+Where a name has no validator it says `unknown` rather than guessing. An
+unchecked key reported as `unknown` is honest; reported as `ok` it is a lie that
+will be believed for months.
+
+The same name appears in several `.env` files by design — per-agent isolation is
+an invariant and one shared file would defeat it — so the copies are compared
+**by digest** and a drift is reported without any value leaving the process.
+
+One caution it was built from: Groq sits behind Cloudflare, which rejects
+urllib's default User-Agent with `HTTP 403 error code: 1010`. That is an edge
+block, not an auth failure, and the first version of this script reported a
+working key as INVALID in all four `.env` files while the agents were using it
+successfully in the same minute. Every request now carries a real User-Agent.
+
+### `redact_docs.py`
+
+`documentation/AUDIT-agentic-os.md` raised this against the README and it was
+just as true of the audit itself: publishing both bot IDs plus the one
+allow-listed chat ID hands an attacker the exact target set. A bot ID is the
+numeric prefix of its token; the chat ID is the whole authentication boundary.
+
+106 values across 14 tracked documents are now redacted, and `--check` fails if
+any come back.
+
+It does **not** rewrite git history. Those values are in old commits and they
+stay there — rewriting every hash in an already-pushed repository, for values
+that must be treated as disclosed either way, buys nothing. Rotate what can be
+rotated, stop publishing it going forward, and say so.
+
+It also leaves `tests/` and `archive/pre-hermes/` alone: those contain
+deliberately fake credentials whose purpose is to prove the redaction layer
+removes them. Scrubbing them would delete the evidence that redaction works.
+
+## Known open items
+
+Carried forward deliberately, with what each one needs.
+
+| item | needs |
+|---|---|
+| Scheduled task still restarts **999** times, not 3 | one elevated `Set-ScheduledTask`; the task's ACL denies a standard user, and `schtasks /create /xml /f` and `Register-ScheduledTask` are denied too |
+| Windows Event Log alerts are not written | one elevated `New-EventLog -LogName Application -Source Hermes_Gateway`; the launcher reports this rather than failing silently, and the Telegram and file channels work regardless |
+| T3b re-test outstanding | the SOUL rule against delegating non-coding shell/file requests is installed but has not been re-tested over a real Telegram message |
+| T2 returned no program output | `get_result` gave Hermes a report with no stdout in it, and `executor_end` recorded `tool_calls: 1` — one write, no run. Whether Pi never ran the file or Hermes dropped the output is **not decidable from the logs**, because the coding agent logs that the executor finished but not what it reported, and the job registry is in-process |
+| Disclosed identifiers are not rotated | the bot token and chat ID were published in this repository's history. Redaction stops new exposure; it does not undo the old one |
+| `documentation/STATUS.md` records `external_action.py` still POSTing to a dead `/message/send` route | archived pre-Hermes code, unreachable from any production path; left as history rather than repaired |
+| CI has never passed | unchanged from `STATUS.md`; no automated check has ever validated this repository |

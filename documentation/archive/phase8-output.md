@@ -11,8 +11,8 @@
 | Credential | Value (redacted) | Storage | Exposure Risk |
 |------------|------------------|---------|---------------|
 | OpenRouter API key | `sk-or-...f8c1` (73 chars) | OpenClaw state DB (`openclaw.sqlite`) + agent DB (`openclaw-agent.sqlite`) + `openclaw.json` auth.profiles | Medium — stored in three SQLite/openhwa files; accessible to anyone with filesystem access |
-| Telegram bot token (Hermes) | `8917859111:***` | Hermes `.env` (`C:\Users\HP\AppData\Local\hermes\.env`) | Low — `.env` not tracked in git; accessible to HP user account |
-| Telegram bot token (OpenClaw) | `8845344838:***` | OpenClaw config (`C:\Users\HP\.openclaw\openclaw.json`) | Medium — stored in plain JSON config file |
+| Telegram bot token (Hermes) | `<bot-id-redacted>:***` | Hermes `.env` (`C:\Users\HP\AppData\Local\hermes\.env`) | Low — `.env` not tracked in git; accessible to HP user account |
+| Telegram bot token (OpenClaw) | `<bot-id-redacted>:***` | OpenClaw config (`C:\Users\HP\.openclaw\openclaw.json`) | Medium — stored in plain JSON config file |
 | Gemini API key | `AQ.Ab...` (53 chars) | Hermes `.env` (`C:\Users\HP\AppData\Local\hermes\.env`) + generates proposal drafts | Low — `.env` not tracked; Gemini key has generative content scope only |
 | ClickUp token | `pk_240010007_...` (49 chars) | Hermes `.env` + passed to `clickup.js` via env var | Low — `.env` not tracked; token has full workspace access (create/read/update tasks) |
 | GitHub PAT | `ghp_...` | gh keyring (Windows credential manager) | Low — stored in OS credential manager; PAT has repo read/write scope |
@@ -28,18 +28,18 @@
 
 ### Telegram Bots
 
-**Hermes Telegram bot (`8917859111:***`):**
-- `TELEGRAM_ALLOWED_USERS=1360833951` — only user ID 1360833951 can interact
-- Configured via Hermes gateway config (`config.yaml`): `gateway.platforms.telegram.allow_list: [1360833951]`
-- Verified: inbound message from Juma Moya (ID 1360833951) received and replied to; no other users can reach the bot
+**Hermes Telegram bot (`<bot-id-redacted>:***`):**
+- `TELEGRAM_ALLOWED_USERS=<chat-id-redacted>` — only user ID <chat-id-redacted> can interact
+- Configured via Hermes gateway config (`config.yaml`): `gateway.platforms.telegram.allow_list: [<chat-id-redacted>]`
+- Verified: inbound message from Juma Moya (ID <chat-id-redacted>) received and replied to; no other users can reach the bot
 
-**OpenClaw Telegram bot (`8845344838:***`, `@bukomaopenclawbot`):**
+**OpenClaw Telegram bot (`<bot-id-redacted>:***`, `@bukomaopenclawbot`):**
 - `channels.telegram.dmPolicy: "allowlist"` — deny by default
-- `channels.telegram.allowFrom: ["1360833951"]` — only user ID 1360833951 can interact
+- `channels.telegram.allowFrom: ["<chat-id-redacted>"]` — only user ID <chat-id-redacted> can interact
 - Configured in `openclaw.json`, hot-reloaded by gateway
 - Verified: bot replies to Juma Moya; polling active at offset 604676639
 
-**Both bots restrict access to a single Telegram user ID (1360833951).**
+**Both bots restrict access to a single Telegram user ID (<chat-id-redacted>).**
 
 ### OpenClaw Gateway API
 
@@ -127,7 +127,7 @@
 |--------|--------|-------|
 | Credentials in git | ✅ CLEAN | Zero secrets in tracked files (verified via `git grep`) |
 | Credential storage | ⚠️ MIXED | `.env` (good), SQLite DBs (acceptable), `openclaw.json` (acceptable for personal use) |
-| Access control | ✅ RESTRICTIVE | Both Telegram bots allowlist only user 1360833951 |
+| Access control | ✅ RESTRICTIVE | Both Telegram bots allowlist only user <chat-id-redacted> |
 | Network exposure | ✅ MINIMAL | Only outbound HTTPS + loopback gateway; no inbound ports |
 | Auth enforcement | ✅ ENFORCED | OpenClaw gateway requires token; Telegram bots enforce allowlist |
 | Credential rotation | ⚠️ MANUAL | All credentials require manual rotation if compromised |

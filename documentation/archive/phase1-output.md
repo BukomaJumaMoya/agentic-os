@@ -27,7 +27,7 @@ Specialist routing
 
 | Step | Claim | Actual State | Verdict |
 |---|---|---|---|
-| JUMA → Telegram/CLI | Human enters via Telegram bot or CLI | Both Hermes bot (8917859111:***) and OpenClaw bot (8845344838:***) operational; CLI access to both gateways exists | ✅ ACHIEVABLE |
+| JUMA → Telegram/CLI | Human enters via Telegram bot or CLI | Both Hermes bot (<bot-id-redacted>:***) and OpenClaw bot (<bot-id-redacted>:***) operational; CLI access to both gateways exists | ✅ ACHIEVABLE |
 | Telegram/CLI → OpenClaw | Input enters OpenClaw gateway first | OpenClaw gateway running on 127.0.0.1:18789; Hermes sits behind it; both Telegram bots feed into OpenClaw; CLI communicates with both | ✅ ACHIEVABLE (though Hermes also has direct Telegram — see 1.3) |
 | OpenClaw → Hermes | OpenClaw forwards to Hermes chief agent | Hermes is configured to sit behind OpenClaw; OpenClaw delegates to Hermes for orchestration | ✅ ACHIEVABLE |
 | Hermes → Research | Hermes routes research requests to research tools | Hermes has web_search, web_extract, browser_exec tools for research | ✅ ACHIEVABLE |
@@ -95,12 +95,12 @@ All authentication is already in place for the viable path:
 | Hermes → ClickUp | API token (CLICKUP_TOKEN) | ✅ Present in Hermes `.env`; API verified |
 | Hermes → GitHub | PAT (via `gh` keyring) | ✅ Present; logged in as BukomaJumaMoya |
 | Telegram bots | Bot tokens | ✅ Present for both Hermes and OpenClaw bots |
-| OpenClaw → Telegram | Bot token (8845344838:***) | ✅ Present |
+| OpenClaw → Telegram | Bot token (<bot-id-redacted>:***) | ✅ Present |
 
 ## 1.8 Security Risks
 
 1. **Copilot CLI blocked** — not a security risk, but a capability gap. Gemini CLI is the substitute.
-2. **Two Telegram entry points** — Hermes's direct bot and OpenClaw's bot both accept messages from allowlisted user 1360833951. Not a risk (same user), but worth documenting.
+2. **Two Telegram entry points** — Hermes's direct bot and OpenClaw's bot both accept messages from allowlisted user <chat-id-redacted>. Not a risk (same user), but worth documenting.
 3. **ClickUp token in Hermes `.env`** — stored as a file credential. Hermes reads it at runtime. Acceptable for local use; should not be committed to git (already redacted from repo).
 4. **Gemini API key in Hermes `.env`** — same as above.
 5. **GitHub PAT scopes** — broad scopes (repo, project, copilot, workflow, admin:org, delete:packages, write:packages). The PAT is stored in `gh`'s keyring. Acceptable; scopes are broad but necessary for the freelancing workflow.

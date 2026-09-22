@@ -16,7 +16,7 @@
 - **Recovery**: Hermes queues non-urgent work; escalates time-sensitive approvals.
 - **Cost**: Free (human time).
 - **Constraints**: Human-in-the-loop required for external communications and destructive operations (Phase 11).
-- **Security**: JUMA is the only Telegram allowlisted user (1360833951). No other user can interact with the bots.
+- **Security**: JUMA is the only Telegram allowlisted user (<chat-id-redacted>). No other user can interact with the bots.
 
 ---
 
@@ -27,12 +27,12 @@
 - **Why chosen**: Already configured and operational; Telegram is JUMA's preferred communication channel; mobile-accessible.
 - **Inputs**: JUMA's messages (text); botTokens from Hermes `.env` and OpenClaw `openclaw.json` (REDACTED — not printed).
 - **Outputs**: Bot replies, status updates, approval prompts.
-- **Connections**: JUMA (user 1360833951, allowlisted); OpenClaw gateway (receives Telegram messages); Hermes (direct Telegram bot).
+- **Connections**: JUMA (user <chat-id-redacted>, allowlisted); OpenClaw gateway (receives Telegram messages); Hermes (direct Telegram bot).
 - **Failure modes**: Telegram API downtime; bot token revoked; rate limiting.
 - **Recovery**: Use CLI as fallback; re-authenticate bot if token revoked.
 - **Cost**: Free (Telegram is free; bot API has no cost).
-- **Constraints**: Both bots restricted to user 1360833951 via allowlist. Cannot interact with other users.
-- **Security**: Allowlist-only (dmPolicy: allowlist, allowFrom: [1360833951]). Bot tokens stored in Hermes `.env` and OpenClaw `openclaw.json` — must not be committed to git.
+- **Constraints**: Both bots restricted to user <chat-id-redacted> via allowlist. Cannot interact with other users.
+- **Security**: Allowlist-only (dmPolicy: allowlist, allowFrom: [<chat-id-redacted>]). Bot tokens stored in Hermes `.env` and OpenClaw `openclaw.json` — must not be committed to git.
 
 ---
 
@@ -57,14 +57,14 @@
 - **Category**: Gateway / Infrastructure
 - **Purpose**: Entry point for Telegram and CLI communication; routes requests to Hermes; provides session management, hooks (session-memory), and plugin infrastructure.
 - **Why chosen**: Already installed, configured, operational. Required by the architecture (Hermes sits behind OpenClaw). Provides the Telegram integration and session-memory hook.
-- **Inputs**: Telegram messages (via bot 8845344838:***), CLI requests, plugin/hook events.
+- **Inputs**: Telegram messages (via bot <bot-id-redacted>:***), CLI requests, plugin/hook events.
 - **Outputs**: Routes requests to Hermes; returns responses to Telegram/CLI; emits logs; maintains session memory.
-- **Connections**: Telegram bot (8845344838:***); Hermes (delegation target); OpenRouter (model provider for Solar Pro4); session memory (hook).
+- **Connections**: Telegram bot (<bot-id-redacted>:***); Hermes (delegation target); OpenRouter (model provider for Solar Pro4); session memory (hook).
 - **Failure modes**: Gateway process crashes; port 18789 unavailable; Telegram bot token invalid; OpenRouter key invalid.
 - **Recovery**: Restart gateway process; verify bot token; verify OpenRouter key; check logs at `C:\Users\HP\AppData\Local\Temp\openclaw\openclaw-2026-09-04.log`.
 - **Cost**: Free (OpenClaw is open source; runs locally; uses OpenRouter free-tier models).
 - **Constraints**: Runs on Node.js v24.19.0; bound to localhost:18789; session-memory hook enabled (writes to state). Not WSL-based (native Windows).
-- **Security**: Bound to localhost (not internet-exposed). Telegram bot allowlisted to 1360833951. OpenRouter key stored in `openclaw.json` + SQLite auth stores — must not be committed to git.
+- **Security**: Bound to localhost (not internet-exposed). Telegram bot allowlisted to <chat-id-redacted>. OpenRouter key stored in `openclaw.json` + SQLite auth stores — must not be committed to git.
 
 ---
 
@@ -201,9 +201,9 @@
 | Component | Role | Why | Connects To | Cost | Status |
 |---|---|---|---|---|---|
 | JUMA (Human) | Operator / approver | Final authority; provides intent | Telegram, CLI, receives Hermes output | Free (time) | ✅ OPERATIONAL |
-| Telegram | Communication (primary) | JUMA's preferred channel; already operational | JUMA, OpenClaw (bot 8845344838:***), Hermes (bot 8917859111:***) | Free | ✅ OPERATIONAL |
+| Telegram | Communication (primary) | JUMA's preferred channel; already operational | JUMA, OpenClaw (bot <bot-id-redacted>:***), Hermes (bot <bot-id-redacted>:***) | Free | ✅ OPERATIONAL |
 | CLI | Communication (secondary) | Terminal access; already operational | Hermes, OpenClaw | Free | ✅ OPERATIONAL |
-| OpenClaw Gateway | Gateway / Infrastructure | Entry point; routes to Hermes; session memory; Telegram integration | Telegram (8845344838:***), Hermes, OpenRouter, session-memory hook | Free | ✅ OPERATIONAL |
+| OpenClaw Gateway | Gateway / Infrastructure | Entry point; routes to Hermes; session memory; Telegram integration | Telegram (<bot-id-redacted>:***), Hermes, OpenRouter, session-memory hook | Free | ✅ OPERATIONAL |
 | Hermes | Chief Agent / Orchestrator | Understands intent; routes; delegates; synthesises; requests approval | OpenClaw, Solar Pro4 (Nous Portal), research tools, ClickUp API, Gemini API/CLI, gh/git, Telegram | Free (Nous Portal OAuth) | ✅ OPERATIONAL |
 | Solar Pro4 (Nous Portal) | Primary Model | Hermes's reasoning model; already configured; free tier | Hermes | Free (Nous Portal OAuth) | ✅ OPERATIONAL |
 | Solar Pro4 (OpenRouter) | Fallback Model | Redundancy for primary model; already configured in OpenClaw | OpenClaw, OpenRouter | Free-tier (OpenRouter) | ✅ CONFIGURED |
