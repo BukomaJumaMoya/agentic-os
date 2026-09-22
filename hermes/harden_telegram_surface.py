@@ -97,6 +97,7 @@ TELEGRAM_TOOLSETS = [
     "research",
     "pm",
     NEW_SERVER,
+    "docs_agent",
 ]
 
 GUARD_MARKER = "juma-rebuild: Telegram tool-surface guard"

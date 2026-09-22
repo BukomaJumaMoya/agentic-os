@@ -69,6 +69,18 @@ import sys
 from pathlib import Path
 
 PLATFORM = "telegram"
+
+# EVERY surface, not just the one that was audited.
+#
+# platform_toolsets had no `cron` entry, so Hermes fell back to the `cli` list
+# and every scheduled job ran with terminal, write_file and execute_code --
+# while this guard watched `telegram` and reported it clean. Checking one
+# surface and calling it "the surface" is the exact mistake that produced the
+# original collision.
+#
+# `cli` is deliberately NOT here: it is an operator at their own keyboard, a
+# different threat model, and it is covered by the approval patch instead.
+GUARDED_PLATFORMS = ("telegram", "cron")
 REPO = Path(__file__).resolve().parent.parent
 MANIFEST_PATH = REPO / "hermes" / "surface-manifest.json"
 
@@ -147,12 +159,12 @@ def digest(value: str) -> str:
 # the eight checks -- each pure enough to be called with doctored input
 # --------------------------------------------------------------------------
 
-def resolve_telegram_tools(cfg):
-    """(tool names, resolved toolset names) for the Telegram platform."""
+def resolve_telegram_tools(cfg, platform: str = PLATFORM):
+    """(tool names, resolved toolset names) for one platform."""
     from hermes_cli.tools_config import _get_platform_tools
     import model_tools
 
-    toolsets = sorted(_get_platform_tools(cfg, PLATFORM))
+    toolsets = sorted(_get_platform_tools(cfg, platform))
     agent_cfg = cfg.get("agent") or {}
     try:
         from agent.skill_utils import parse_config_string_list
@@ -163,19 +175,19 @@ def resolve_telegram_tools(cfg):
     return names, toolsets
 
 
-def check_tool_surface(names, toolsets, manifest) -> tuple[bool, str]:
+def check_tool_surface(names, toolsets, manifest, platform=PLATFORM) -> tuple[bool, str]:
     """1. Nothing on the wire that the manifest does not declare."""
     allowed = set(manifest_tools(manifest)) | BRIDGE_TOOLS
     forbidden = sorted(set(names) - allowed)
     if forbidden:
         return False, (
-            f"{len(forbidden)} forbidden tool(s) on the {PLATFORM} surface: "
+            f"{len(forbidden)} forbidden tool(s) on the {platform} surface: "
             f"{', '.join(forbidden)}. Resolved toolsets: {toolsets}. "
             f"Run hermes/harden_telegram_surface.py.")
     return True, f"{len(names)} resolved tool(s) {names}, all declared"
 
 
-def check_surface_in_manifest(names, manifest) -> tuple[bool, str]:
+def check_surface_in_manifest(names, manifest, platform=PLATFORM) -> tuple[bool, str]:
     """6. Every resolved tool has a declared owner.
 
     Distinct from check 1 in what it says, not in what it computes: 1 is the
@@ -186,7 +198,7 @@ def check_surface_in_manifest(names, manifest) -> tuple[bool, str]:
     declared = manifest_tools(manifest)
     undeclared = sorted(set(names) - set(declared) - BRIDGE_TOOLS)
     if undeclared:
-        return False, (f"on the {PLATFORM} surface but absent from "
+        return False, (f"on the {platform} surface but absent from "
                        f"{MANIFEST_PATH.name}: {', '.join(undeclared)}")
     return True, f"all {len(names)} surface tool(s) have an owner"
 
@@ -412,19 +424,25 @@ def check():
         from hermes_cli.config import load_config
         cfg = load_config() or {}
         manifest = load_manifest()
-        names, toolsets = resolve_telegram_tools(cfg)
+        surfaces = {p: resolve_telegram_tools(cfg, p) for p in GUARDED_PLATFORMS}
+        names, toolsets = surfaces[PLATFORM]
     except Exception as exc:
         # Cannot prove the surface is safe -> treat as unsafe.
         return False, (f"could not load the {PLATFORM} configuration "
                        f"({type(exc).__name__}: {exc}); refusing to assume it is safe")
 
-    checks = [
-        ("tool surface", lambda: check_tool_surface(names, toolsets, manifest)),
+    checks = []
+    for _p in GUARDED_PLATFORMS:
+        _n, _ts = surfaces[_p]
+        checks.append((f"{_p} surface",
+                       lambda n=_n, ts=_ts, p=_p: check_tool_surface(n, ts, manifest, p)))
+        checks.append((f"{_p} in manifest",
+                       lambda n=_n, p=_p: check_surface_in_manifest(n, manifest, p)))
+    checks += [
         ("approval patch", check_approval_patch),
         ("command_allowlist", lambda: check_command_allowlist(cfg)),
         ("telegram allow-list", lambda: check_telegram_allow_list(cfg, manifest)),
         ("mcp include lists", lambda: check_mcp_includes(cfg, manifest)),
-        ("surface in manifest", lambda: check_surface_in_manifest(names, manifest)),
         ("write approval armed", lambda: check_write_approval_armed(cfg, manifest)),
         ("gate sees annotations", lambda: check_gate_sees_annotations(manifest)),
     ]

@@ -362,9 +362,19 @@ def test_annotations_match_the_manifest() -> None:
 
     writes = guard.manifest_write_tools(GOOD_MANIFEST)
     owners = guard.manifest_servers(GOOD_MANIFEST)
-    directories = {"research": "research", "pm": "pm", "coding_agent": "coding"}
+    # MCP server name -> agent directory. Kept beside the manifest rather
+    # than derived, because the two deliberately differ: `coding_agent`
+    # and `docs_agent` are named to avoid colliding with a built-in
+    # toolset, while their directories are plain.
+    directories = {"research": "research", "pm": "pm",
+                   "coding_agent": "coding", "docs_agent": "docs"}
+    missing = sorted(set(owners) - set(directories))
+    check("every manifest server has a known directory", not missing,
+          f"no directory mapped for {missing}; add it here")
 
     for server, declared in sorted(owners.items()):
+        if server not in directories:
+            continue
         main = REPO / "agents" / directories[server] / "main.py"
         try:
             with MCPStdioClient([str(python), str(main)],
@@ -446,6 +456,30 @@ def test_gate_sees_annotations() -> None:
           "condition 8 is duplicating condition 6")
 
 
+def test_every_guarded_surface_is_checked() -> None:
+    """The cron surface was wide open while the guard watched only telegram.
+
+    platform_toolsets had no `cron` key, so Hermes fell back to the cli list and
+    scheduled jobs ran with terminal, write_file and execute_code. Checking one
+    surface and calling it "the surface" is how the original collision survived.
+    """
+    check("the guard names more than one surface",
+          set(guard.GUARDED_PLATFORMS) >= {"telegram", "cron"},
+          f"GUARDED_PLATFORMS is {guard.GUARDED_PLATFORMS}")
+    check("the operator's own cli is NOT guarded as a message surface",
+          "cli" not in guard.GUARDED_PLATFORMS,
+          "cli is an operator at a keyboard; the approval patch covers it")
+
+    breached = GOOD_SURFACE + ["terminal", "write_file", "execute_code"]
+    for platform in guard.GUARDED_PLATFORMS:
+        result = guard.check_tool_surface(breached, ["cli"], GOOD_MANIFEST, platform)
+        refuses(f"{platform}: terminal on the surface", result, mentioning=platform)
+        check(f"{platform}: a clean surface passes",
+              guard.check_tool_surface(GOOD_SURFACE, ["memory"], GOOD_MANIFEST,
+                                       platform)[0] is True,
+              "the healthy case was refused")
+
+
 def test_broken_check_counts_as_failure() -> None:
     """check() wraps every condition: one that raises is a refusal, not a skip."""
     source = (REPO / "hermes" / "check_telegram_surface.py").read_text(encoding="utf-8")
@@ -467,6 +501,7 @@ def main() -> int:
                  test_write_approval_armed,
                  test_annotations_match_the_manifest,
                  test_gate_sees_annotations,
+                 test_every_guarded_surface_is_checked,
                  test_unreadable_manifest_fails_closed,
                  test_broken_check_counts_as_failure):
         func()

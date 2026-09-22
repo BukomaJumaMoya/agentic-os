@@ -55,6 +55,8 @@
     "list_changed_files": "coding_agent",
     "github_query": "coding_agent",
     "github_action": "coding_agent",
-    "docs_query": "coding_agent"
+    "docs_query": "coding_agent",
+
+    "draft_proposal": "docs_agent"
   }
 }

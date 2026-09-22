@@ -61,6 +61,11 @@ AGENT_SPEC = {
     "coding_agent": ("coding", ["start_code_task", "get_status", "get_result",
                                 "list_changed_files", "github_query",
                                 "github_action", "docs_query"]),
+    # `docs_agent`, not `docs`: the same precaution that renamed coding ->
+    # coding_agent. A server named after a built-in toolset silently grants
+    # that whole toolset (see harden_telegram_surface.py), and checking a new
+    # name against `hermes tools list` is cheaper than finding out later.
+    "docs_agent": ("docs", ["draft_proposal"]),
 }
 
 # EVERY server is `trust: untrusted`, and that word does not mean what it looks
@@ -95,7 +100,29 @@ TELEGRAM_TOOLSETS = [
     "research",
     "pm",
     "coding_agent",
+    "docs_agent",
 ]
+
+# The SECOND surface, and it was wide open.
+#
+# platform_toolsets had no `cron` entry, so _get_platform_tools(cfg, "cron")
+# fell through to the `cli` list -- 41 built-in tools including terminal,
+# write_file, execute_code, patch, read_file, browser_navigate and
+# delegate_task. Every scheduled job ran with a shell, while the Telegram
+# surface beside it was locked to three built-ins and nothing said so.
+#
+# It is the original toolset-collision bug wearing different clothes: one
+# surface hardened, a second one nobody compared. Measured before the fix:
+#
+#   platform='telegram'  -> 3 builtin tools;  DANGEROUS=[]
+#   platform='cron'      -> 41 builtin tools; DANGEROUS=['browser_navigate',
+#       'delegate_task', 'execute_code', 'patch', 'read_file', 'terminal',
+#       'write_file']
+#
+# Cron gets exactly the Telegram list. A scheduled job is LESS supervised than
+# a Telegram message, not more: nobody is watching when it runs, and an
+# approval prompt it raises has no one to answer it.
+CRON_TOOLSETS = list(TELEGRAM_TOOLSETS)
 
 MARKER = "# juma-rebuild: agent MCP servers"
 
@@ -218,6 +245,37 @@ def add_agents_to_cli(text: str) -> tuple[str, str]:
     return "".join(new), "CLI: " + "; ".join(changes)
 
 
+def set_cron_toolsets(text: str) -> tuple[str, str]:
+    """Give scheduled jobs the Telegram surface, creating the key if absent.
+
+    An ABSENT key is the dangerous state, not a neutral one: Hermes falls back
+    to the cli list, which carries a terminal. So this writes the key rather
+    than only correcting it.
+    """
+    lines = text.splitlines(keepends=True)
+    span = _platform_block(lines, "cron")
+    if span is not None:
+        start, end = span
+        current = [l.strip()[2:] for l in lines[start + 1:end]]
+        if current == CRON_TOOLSETS:
+            return text, "SKIP: cron toolsets already correct"
+        new = lines[:start + 1] + [f"    - {t}\n" for t in CRON_TOOLSETS] + lines[end:]
+        removed = sorted(set(current) - set(CRON_TOOLSETS))
+        return "".join(new), ("SET cron toolsets"
+                              + (f"; removed: {', '.join(removed)}" if removed else ""))
+
+    try:
+        header = next(i for i, l in enumerate(lines)
+                      if l.startswith("platform_toolsets:"))
+    except StopIteration:
+        return text, "FAIL: platform_toolsets not found"
+    block = ["  cron:\n"] + [f"    - {t}\n" for t in CRON_TOOLSETS]
+    new = lines[:header + 1] + block + lines[header + 1:]
+    return "".join(new), ("ADDED platform_toolsets.cron (it was ABSENT, which "
+                          "meant scheduled jobs inherited the cli list "
+                          "including terminal)")
+
+
 def main() -> int:
     config = hermes_home() / "config.yaml"
     if not config.exists():
@@ -236,6 +294,11 @@ def main() -> int:
         return 1
 
     text, message = add_agents_to_cli(text)
+    print(f"  {message}")
+    if message.startswith("FAIL"):
+        return 1
+
+    text, message = set_cron_toolsets(text)
     print(f"  {message}")
     if message.startswith("FAIL"):
         return 1
@@ -282,9 +345,14 @@ def main() -> int:
             problems.append(f"{name}: resources not false")
         if (entry.get("tools") or {}).get("prompts") is not False:
             problems.append(f"{name}: prompts not false")
+    cron = (parsed.get("platform_toolsets") or {}).get("cron") or []
     for banned in ("terminal", "code_execution", "file", "computer_use", "browser"):
         if banned in telegram:
             problems.append(f"telegram still has {banned}")
+        if banned in cron:
+            problems.append(f"cron still has {banned}")
+    if list(cron) != CRON_TOOLSETS:
+        problems.append(f"platform_toolsets.cron is {cron}, expected {CRON_TOOLSETS}")
     if problems:
         print("FAIL: " + "; ".join(problems))
         return 1

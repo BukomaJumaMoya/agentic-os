@@ -190,6 +190,32 @@ def announce(verdict: str, detail: str) -> list[str]:
 
 # --------------------------------------------------------------------------
 
+def drop_stale_schema_cache() -> None:
+    """Delete Hermes' MCP schema cache before every start. It is DERIVED data.
+
+    The cache is keyed per MCP server and only re-derived when that server's
+    fingerprint changes, and the fingerprint does not cover tool ANNOTATIONS.
+    So entries computed by older code survive indefinitely: after the
+    readOnlyHint fix, a newly added server got the correct hint while the three
+    existing servers kept `readOnlyHint: false` for every read tool, and guard
+    condition 8 refused the start -- correctly, but over a cache rather than
+    over the running system.
+
+    A derived artefact must never be able to wedge the gateway. Hermes rebuilds
+    this on the next connect, so dropping it costs one discovery round and
+    removes the whole staleness class. Condition 8 keeps its teeth: after the
+    rebuild it compares hints the CURRENT code computed from the LIVE agents,
+    which is the disagreement worth refusing over.
+    """
+    cache = hermes_home() / "cache" / "mcp_schema_cache.json"
+    try:
+        if cache.exists():
+            cache.unlink()
+            notify_file("INFO", f"dropped {cache.name} (derived; rebuilt on connect)")
+    except Exception as exc:                      # noqa: BLE001 - never block a start
+        notify_file("INFO", f"could not drop {cache.name}: {type(exc).__name__}")
+
+
 def run_guard() -> tuple[bool, str]:
     """The same check the in-process guard runs, under Hermes' interpreter.
 
@@ -332,6 +358,7 @@ def main() -> int:
             print(f"  {line}")
         return 0
 
+    drop_stale_schema_cache()
     ok, message = run_guard()
     verdict = "PASSED" if ok else "REFUSED"
     print(f"{verdict}: {message}")

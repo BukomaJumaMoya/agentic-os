@@ -46,3 +46,4 @@ agents/*/.env
 agents/coding/vendor/node_modules/
 agents/coding/vendor/package-lock.json
 agents/coding/vendor/.env-mask-empty
+agents/docs/output/
