@@ -24,11 +24,11 @@ because it imports Hermes' resolver rather than reimplementing it. A
 reimplementation would drift from the thing it is checking, which is how the
 original defect survived: two descriptions of the same surface, never compared.
 
-THE SEVEN CONDITIONS
+THE EIGHT CONDITIONS
 --------------------
 One tool-surface check was not enough, because the surface is only one of the
 things that has to hold before the gateway is allowed to talk to Telegram. All
-seven fail CLOSED, and a check that raises counts as failed:
+eight fail CLOSED, and a check that raises counts as failed:
 
   1. tool surface      nothing outside the manifest is on the wire
   2. approval patch    reading the Hermes secret store still asks
@@ -38,6 +38,8 @@ seven fail CLOSED, and a check that raises counts as failed:
   6. surface ⊆ manifest every resolved tool has a declared owner
   7. write approval    every MCP server is trust: untrusted, so Hermes' own
                        per-tool gate stops a write before its RPC is sent
+  8. gate sees hints   what Hermes COMPUTED about each tool's readOnlyHint
+                       matches the manifest -- the comparison that was missing
 
 4 compares a SHA-256, not the ID. The ID is the entire authentication boundary
 and this file is in a repository; a digest pins the value without publishing it,
@@ -142,7 +144,7 @@ def digest(value: str) -> str:
 
 
 # --------------------------------------------------------------------------
-# the seven checks -- each pure enough to be called with doctored input
+# the eight checks -- each pure enough to be called with doctored input
 # --------------------------------------------------------------------------
 
 def resolve_telegram_tools(cfg):
@@ -300,6 +302,74 @@ def check_write_approval_armed(cfg, manifest) -> tuple[bool, str]:
                   f"{len(writes)} write tool(s) gated: {', '.join(sorted(writes))}")
 
 
+def cached_hints(path: Path | None = None) -> dict[str, bool]:
+    """{tool: readOnlyHint} as HERMES COMPUTED IT, from its discovery cache.
+
+    Absent cache -> {} -> check 8 passes, because Hermes rebuilds it on the next
+    connect and there is nothing yet to disagree with.
+    """
+    cache = path or (hermes_home() / "cache" / "mcp_schema_cache.json")
+    if not cache.exists():
+        return {}
+    data = json.loads(cache.read_text(encoding="utf-8"))
+    found: dict[str, bool] = {}
+
+    def walk(node):
+        if isinstance(node, dict):
+            if node.get("name") and "annotations" in node:
+                hint = (node.get("annotations") or {}).get("readOnlyHint")
+                found[node["name"]] = hint is True
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(data)
+    return found
+
+
+def check_gate_sees_annotations(manifest, hints=None) -> tuple[bool, str]:
+    """8. What Hermes computed about each tool matches what we declared.
+
+    THE CHECK THAT WAS MISSING. Two others already existed:
+      - tests assert what the AGENTS publish on the wire
+      - a probe asserts what the GATE does with hints it is handed
+    Neither covered the step between, and that step was broken:
+    `_annotation_read_only_hint()` read `readOnlyHint` off a pydantic model
+    whose attribute is `read_only_hint`, so every hint came back None and every
+    read tool was classified write-capable. Both checks stayed green. The daily
+    briefing died on its first real run because nothing unattended can approve.
+
+    So this compares Hermes' OWN computed answer against the manifest. It is
+    the same lesson as the toolset collision: two correct descriptions of one
+    surface are worth nothing until something compares them.
+    """
+    computed = cached_hints() if hints is None else hints
+    if not computed:
+        return True, "no discovery cache yet (rebuilt on next connect)"
+
+    writes = manifest_write_tools(manifest)
+    declared = set(manifest_tools(manifest))
+    wrong = []
+    for tool, is_read_only in sorted(computed.items()):
+        if tool not in declared:
+            continue
+        should_be_read_only = tool not in writes
+        if is_read_only != should_be_read_only:
+            wrong.append(
+                f"{tool}: Hermes thinks readOnlyHint={is_read_only}, "
+                f"manifest says it is a {'write' if tool in writes else 'read'} tool")
+    if wrong:
+        return False, ("Hermes' tool annotations disagree with the manifest -- "
+                       + "; ".join(wrong)
+                       + ". A read tool seen as write-capable blocks every "
+                         "unattended run; a write tool seen as read-only loses "
+                         "its approval prompt. Run hermes/patch_readonly_hint.py.")
+    checked = len(set(computed) & declared)
+    return True, f"{checked} cached annotation(s) agree with the manifest"
+
+
 def check_mcp_includes(cfg, manifest) -> tuple[bool, str]:
     """5. config.yaml's include lists and the manifest say the same thing.
 
@@ -356,6 +426,7 @@ def check():
         ("mcp include lists", lambda: check_mcp_includes(cfg, manifest)),
         ("surface in manifest", lambda: check_surface_in_manifest(names, manifest)),
         ("write approval armed", lambda: check_write_approval_armed(cfg, manifest)),
+        ("gate sees annotations", lambda: check_gate_sees_annotations(manifest)),
     ]
 
     failures, notes = [], []

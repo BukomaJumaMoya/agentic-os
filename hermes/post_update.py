@@ -23,13 +23,14 @@ WHAT IT RUNS, IN THIS ORDER
   2. harden_telegram_surface.py   the Telegram allowlist + the in-process guard
   3. configure_gemini.py restore  the model chain, and the reasoning-effort trap
   4. apply_approval_patch.py      secret-store reads require approval again
-  5. gateway_launcher.py --install  the task reaches the guard; policy reported
-  6. check_telegram_surface.py    all seven conditions, under Hermes' interpreter
-  7. tests/test_surface_guard.py  the negative tests -- proof it still REFUSES
+  5. patch_readonly_hint.py       Hermes reads readOnlyHint at all (see its docstring)
+  6. gateway_launcher.py --install  the task reaches the guard; policy reported
+  7. check_telegram_surface.py    all eight conditions, under Hermes' interpreter
+  8. tests/test_surface_guard.py  the negative tests -- proof it still REFUSES
 
-6 before 7 on purpose. 6 says the machine is currently in the right state; 7
-says the check that decided that is still capable of saying no. A green 6 with
-a broken 7 is the failure mode that matters, because it looks exactly like
+7 before 8 on purpose. 7 says the machine is currently in the right state; 8
+says the check that decided that is still capable of saying no. A green 7 with
+a broken 8 is the failure mode that matters, because it looks exactly like
 success.
 
     python hermes/post_update.py
@@ -76,9 +77,11 @@ def steps() -> list[tuple]:
          REPO / "hermes" / "configure_gemini.py", ["restore"], agent, None, True),
         ("approval patch",
          REPO / "hermes" / "apply_approval_patch.py", [], agent, None, True),
+        ("readOnlyHint alias patch",
+         REPO / "hermes" / "patch_readonly_hint.py", [], agent, None, True),
         ("gateway launcher + task policy",
          REPO / "hermes" / "gateway_launcher.py", ["--install"], agent, None, False),
-        ("startup guard (all seven conditions)",
+        ("startup guard (all eight conditions)",
          REPO / "hermes" / "check_telegram_surface.py", [], hermes, checkout, True),
         ("guard negative tests",
          REPO / "tests" / "test_surface_guard.py", [], agent, None, True),
@@ -134,7 +137,7 @@ def main() -> int:
               "guard will refuse anyway, and now it will say so over Telegram.")
         return 1
 
-    print("\nPASS -- every patch re-applied, all seven guard conditions hold, "
+    print("\nPASS -- every patch re-applied, all eight guard conditions hold, "
           "and the guard still refuses each of them when broken.")
     print("Restart the gateway to pick this up: hermes gateway restart")
     return 0

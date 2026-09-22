@@ -392,6 +392,60 @@ def test_annotations_match_the_manifest() -> None:
                       "missing readOnlyHint, so every call would prompt for approval")
 
 
+# --------------------------------------------------------------------------
+# condition 8 -- Hermes' computed annotations match the manifest
+# --------------------------------------------------------------------------
+
+def test_gate_sees_annotations() -> None:
+    """The check that was missing, and the bug it would have caught.
+
+    Hermes read `readOnlyHint` off a pydantic model whose attribute is
+    `read_only_hint`, so every hint came back None and every read tool was
+    classified write-capable. The daily briefing died on its first real run --
+    "The user did not approve running write-capable MCP tool 'pm_query'" -- and
+    nothing unattended can approve. Both existing checks stayed green: one
+    asserts what the agents PUBLISH, the other what the gate does with hints it
+    is HANDED. Neither compared Hermes' own computed answer to the manifest.
+    """
+    writes = guard.manifest_write_tools(GOOD_MANIFEST)
+    healthy = {t: (t not in writes) for t in guard.manifest_tools(GOOD_MANIFEST)}
+
+    check("the healthy case passes",
+          guard.check_gate_sees_annotations(GOOD_MANIFEST, healthy)[0] is True,
+          "a correct annotation set was refused")
+
+    check("an absent cache is not a failure",
+          guard.check_gate_sees_annotations(GOOD_MANIFEST, {})[0] is True,
+          "a missing cache should pass; Hermes rebuilds it on connect")
+
+    # The exact production bug: every hint False.
+    all_false = {t: False for t in healthy}
+    refuses("the readOnlyHint alias bug (every tool seen as write-capable)",
+            guard.check_gate_sees_annotations(GOOD_MANIFEST, all_false),
+            mentioning="pm_query")
+
+    # The dangerous direction: a WRITE tool that gained readOnlyHint.
+    for write_tool in sorted(writes):
+        broken = dict(healthy)
+        broken[write_tool] = True
+        refuses(f"{write_tool} wrongly annotated read-only (loses its approval)",
+                guard.check_gate_sees_annotations(GOOD_MANIFEST, broken),
+                mentioning=write_tool)
+
+    # One read tool misclassified is enough to break unattended runs.
+    broken = dict(healthy, pm_query=False)
+    refuses("pm_query seen as write-capable",
+            guard.check_gate_sees_annotations(GOOD_MANIFEST, broken),
+            mentioning="unattended")
+
+    # Tools Hermes cached that the manifest does not declare are not this
+    # check's business -- condition 6 owns that -- so they must not fire here.
+    extra = dict(healthy, some_other_server_tool=False)
+    check("a tool outside the manifest is ignored here",
+          guard.check_gate_sees_annotations(GOOD_MANIFEST, extra)[0] is True,
+          "condition 8 is duplicating condition 6")
+
+
 def test_broken_check_counts_as_failure() -> None:
     """check() wraps every condition: one that raises is a refusal, not a skip."""
     source = (REPO / "hermes" / "check_telegram_surface.py").read_text(encoding="utf-8")
@@ -412,6 +466,7 @@ def main() -> int:
                  test_surface_tool_not_in_manifest,
                  test_write_approval_armed,
                  test_annotations_match_the_manifest,
+                 test_gate_sees_annotations,
                  test_unreadable_manifest_fails_closed,
                  test_broken_check_counts_as_failure):
         func()

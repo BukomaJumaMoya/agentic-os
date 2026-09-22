@@ -206,7 +206,7 @@ determine something, say so rather than inferring it."""
 GITHUB_ACTION_SYSTEM = f"""You carry out GitHub instructions for a freelance
 software engineer.
 
-{guard.AUTHORITY_RULE}
+{guard.TASK_AUTHORITY_RULE}
 
 You can read, create a branch, commit files and open a pull request. You
 CANNOT merge, delete, fork, create repositories, approve reviews, or touch
@@ -1127,7 +1127,7 @@ def main() -> None:
                                    allow=GITHUB_READ | GITHUB_WRITE,
                                    audit=boot.audit) as gh:
             out = mcp_client.loop(boot, gh, system=GITHUB_ACTION_SYSTEM,
-                                  instruction=instruction)
+                                  instruction=instruction, task=True)
         changes = [op for op in out["operations"]
                    if op["tool"] in GITHUB_WRITE and op["ok"]]
         boot.audit.write("github_action_done", instruction=instruction,

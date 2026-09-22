@@ -160,11 +160,16 @@ class Downstream:
                 read, write = await self._stack.enter_async_context(
                     stdio_client(params, errlog=sys.stderr))
             else:
-                import httpx
-                from mcp.client.streamable_http import streamable_http_client
+                # create_mcp_http_client rather than importing httpx directly:
+                # the SDK vendors its HTTP client as `httpx2`, and naming the
+                # module here is how the first version of this broke -- an
+                # ImportError on `httpx` in the one transport that had no test
+                # covering it, because GitHub and Context7 are both stdio.
+                from mcp.client.streamable_http import (
+                    create_mcp_http_client, streamable_http_client)
                 client = await self._stack.enter_async_context(
-                    httpx.AsyncClient(headers=dict(self.spec.headers),
-                                      timeout=self.timeout))
+                    create_mcp_http_client(headers=dict(self.spec.headers),
+                                           timeout=self.timeout))
                 streams = await self._stack.enter_async_context(
                     streamable_http_client(self.spec.url, http_client=client))
                 read, write = streams[0], streams[1]
@@ -284,7 +289,7 @@ def as_tools(available: list[dict]) -> list[dict]:
 
 
 def loop(boot, downstream: "Downstream", *, system: str, instruction: str,
-         max_steps: int = 8, max_tokens: int = 1500) -> dict:
+         task: bool = False, max_steps: int = 8, max_tokens: int = 1500) -> dict:
     """Let the model drive one downstream server until it answers.
 
     The same shape as the pm agent's ClickUp loop, for the same reason: the
@@ -299,8 +304,12 @@ def loop(boot, downstream: "Downstream", *, system: str, instruction: str,
                          f"the {downstream.name} server offers none of the "
                          f"tools this agent is allowed to use")
 
-    messages: list[dict] = [
-        {"role": "user", "content": guard.instruction_block(instruction)}]
+    # `task=True` means the caller's instruction is the thing to DO, so it
+    # is fenced but authoritative; otherwise it is material to answer about.
+    # Getting this wrong is not a subtle failure: an action tool given the
+    # read framing refuses every write it is asked for. See guard.py.
+    wrap = guard.task_block if task else guard.instruction_block
+    messages: list[dict] = [{"role": "user", "content": wrap(instruction)}]
     performed: list[dict] = []
 
     for step in range(max_steps):

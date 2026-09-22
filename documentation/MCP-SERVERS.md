@@ -177,7 +177,70 @@ Telegram*. The code path is `_is_gateway_approval_context()` →
 `_await_gateway_decision`, which is the same round-trip the dangerous-command
 gate already uses, but it has not been exercised end to end from a phone.
 
-## Kolaborate — blocked, and what I found
+## Kolaborate — key received, service down, analysis corrected
+
+**Correction.** The table above and the placement arithmetic earlier in this
+file said Kolaborate exposes **122 tools** costing ~36,600 tokens per call.
+That came from its landing page. With the key in hand, its real `tools/list`
+returns **two**:
+
+```
+  kola_discover   Search the Kola tool catalog (filtered to your access level).
+  kola_call       Execute any Kola tool by exact name.
+```
+
+It is a meta-dispatcher, not a 122-tool surface. Attached directly to Hermes it
+would cost roughly 600 tokens, not 36,600 — so the token argument for keeping it
+behind an agent **does not hold**, and I withdraw it.
+
+The placement does not change, for a better reason. `kola_call` is a single
+generic entry point that can invoke any of the 122 operations, including writes,
+with the operation named in its *arguments*. That defeats tool-level policy
+entirely:
+
+- Hermes' allowlist works on tool NAMES, so it can only allow `kola_call` or
+  ban it. "Jobs read but not jobs write" is inexpressible.
+- Hermes' write-approval gate keys on a per-tool `readOnlyHint`. `kola_call` has
+  none, so every call prompts — including reads — and the prompt cannot say
+  which of the 122 operations is about to run.
+
+An owning agent can enforce what Hermes cannot: an allowlist on the **inner
+operation name** inside `kola_call`'s arguments, and a read/write split that
+maps onto two agent tools. So it goes behind an agent because that is the only
+place the policy is expressible, not because of token cost.
+
+### Blocked: the service is down
+
+The key works — `tools/list` returned the two tools above at 14:18. Ten minutes
+later every call, including `tools/list` with the same key, returned:
+
+```
+{"error":"Authentication service unavailable."}
+```
+
+Consistently, across four attempts and both the SDK and raw HTTP. Meanwhile:
+
+```
+GET /api/health -> {"ok":true,"service":"kola-mcp-server",
+                    "checks":{"convexUrlConfigured":true,"convexUrlMatchesExpected":true}}
+```
+
+Their health endpoint checks that a Convex URL is *configured*, not that it is
+*reachable*, so it reports healthy while authentication is down. It is not a
+liveness signal and should not be treated as one.
+
+`agents/kola/.env` holds the key (gitignored) and `agents/kola/discover.py` will
+enumerate the catalogue the moment the service returns.
+
+### Also fixed on the way
+
+The HTTP transport in `_common/mcp_client.py` had never been exercised — GitHub
+and Context7 are both stdio — and it imported `httpx`. The SDK vendors its
+client as `httpx2`, so the first real HTTP connection raised `ModuleNotFoundError`.
+It now uses the SDK's own `create_mcp_http_client`, which avoids naming the
+module at all.
+
+## Kolaborate — original provenance notes
 
 Added at your request mid-run. It is **not wired up**, because it needs an API
 key that only you can mint.
