@@ -59,8 +59,29 @@ AGENT_SPEC = {
     "research": ("research", ["research"]),
     "pm": ("pm", ["pm_query", "pm_action"]),
     "coding_agent": ("coding", ["start_code_task", "get_status", "get_result",
-                                "list_changed_files"]),
+                                "list_changed_files", "github_query",
+                                "github_action", "docs_query"]),
 }
+
+# EVERY server is `trust: untrusted`, and that word does not mean what it looks
+# like it means here. It is not a statement about whether these agents are
+# trusted -- they are ours. It is the switch that turns on Hermes' per-tool
+# human approval gate (tools/mcp_tool_handlers.py:_trust_gate_check): on an
+# untrusted server, any tool whose discovery-time readOnlyHint is not exactly
+# True must be approved by a human before the RPC is sent.
+#
+# That gate is DETERMINISTIC. It runs in Hermes' MCP layer, before the call
+# leaves the process, and the model is not consulted and cannot skip it. The
+# SOUL also asks Hermes to confirm before a write, but a prompt is a request;
+# this is a check. Both are kept, because they fail differently.
+#
+# Which tools it catches is decided entirely by the annotations the agents
+# publish -- see agents/coding/main.py, where the read tools carry
+# readOnlyHint: True and start_code_task and github_action deliberately do not.
+# Adding a write tool WITHOUT an annotation gates it automatically; adding one
+# WITH readOnlyHint: True silently exempts it. That asymmetry is the right way
+# round, and it is why the annotation is checked in the guard.
+SERVER_TRUST = "untrusted"
 
 # Kept as a name->tools view for the verification loop below.
 AGENT_TOOLS = {name: tools for name, (_dir, tools) in AGENT_SPEC.items()}
@@ -107,6 +128,7 @@ def build_mcp_block() -> str:
             "    args:",
             f"      - {(AGENTS / directory / 'main.py').as_posix()}",
             f"    cwd: {(AGENTS / directory).as_posix()}",
+            f"    trust: {SERVER_TRUST}",
             "    tools:",
             "      include:",
         ]
@@ -253,6 +275,9 @@ def main() -> int:
         entry = servers.get(name) or {}
         if sorted((entry.get("tools") or {}).get("include") or []) != sorted(tools):
             problems.append(f"{name}: include list wrong")
+        if entry.get("trust") != SERVER_TRUST:
+            problems.append(f"{name}: trust is {entry.get('trust')!r}, not "
+                            f"{SERVER_TRUST!r} -- write approval would be off")
         if (entry.get("tools") or {}).get("resources") is not False:
             problems.append(f"{name}: resources not false")
         if (entry.get("tools") or {}).get("prompts") is not False:

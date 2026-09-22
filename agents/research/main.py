@@ -321,6 +321,11 @@ def main() -> None:
             "sources. Read-only: it cannot write files or reach any other "
             "service."
         ),
+        # The server is `trust: untrusted` in Hermes' config, which gates every
+        # tool that is not annotated read-only behind a human approval prompt.
+        # This agent has no write tool at all, so the annotation costs nothing
+        # and prevents a research question asking the operator for permission.
+        annotations={"readOnlyHint": True},
     )
     def research(question: str, depth: str = "standard") -> dict:
         question = str(question or "").strip()

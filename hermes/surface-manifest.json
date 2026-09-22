@@ -10,11 +10,35 @@
     "start when config.yaml and this file disagree, in either direction.",
     "Adding a tool to an agent means editing this file. That is the point.",
     "",
+    "Third-party MCP servers are NOT listed here, because none of them reach",
+    "this surface. The GitHub MCP server (32 tools) and Context7 (2) are",
+    "connected by the coding agent as a client and never by Hermes; Hermes sees",
+    "github_query, github_action and docs_query. See agents/_common/mcp_client.py.",
+    "",
     "Derived 2026-09-22 from the verified surface: config.yaml mcp_servers",
     "tools.include, plus the three built-ins Hermes' own resolver reported",
     "('telegram surface clean: 3 built-in tool(s)')."
   ],
   "telegram_allowed_users_sha256": "852889e698b302eb882b0d5739eec3e0840fa7434d8124d92fb92b8fe6983320",
+
+  "_write_tools": [
+    "Tools that change something outside this machine, and must therefore be",
+    "gated by Hermes' per-tool approval before the RPC is sent.",
+    "",
+    "The gate is armed by mcp_servers.<name>.trust: untrusted in config.yaml and",
+    "aimed by the readOnlyHint annotation each agent publishes: on an untrusted",
+    "server, a tool whose readOnlyHint is not exactly True needs human approval",
+    "(Hermes tools/mcp_tool_handlers.py:_trust_gate_check). So a tool listed here",
+    "must NOT be annotated readOnlyHint: True by its agent, and every tool NOT",
+    "listed here must be. check_telegram_surface.py enforces both directions --",
+    "a write tool that gains the annotation would silently lose its approval."
+  ],
+  "write_tools": [
+    "pm_action",
+    "start_code_task",
+    "github_action"
+  ],
+
   "tools": {
     "clarify": "hermes-builtin",
     "memory": "hermes-builtin",
@@ -28,6 +52,9 @@
     "start_code_task": "coding_agent",
     "get_status": "coding_agent",
     "get_result": "coding_agent",
-    "list_changed_files": "coding_agent"
+    "list_changed_files": "coding_agent",
+    "github_query": "coding_agent",
+    "github_action": "coding_agent",
+    "docs_query": "coding_agent"
   }
 }

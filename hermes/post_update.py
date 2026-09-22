@@ -24,7 +24,7 @@ WHAT IT RUNS, IN THIS ORDER
   3. configure_gemini.py restore  the model chain, and the reasoning-effort trap
   4. apply_approval_patch.py      secret-store reads require approval again
   5. gateway_launcher.py --install  the task reaches the guard; policy reported
-  6. check_telegram_surface.py    all six conditions, under Hermes' interpreter
+  6. check_telegram_surface.py    all seven conditions, under Hermes' interpreter
   7. tests/test_surface_guard.py  the negative tests -- proof it still REFUSES
 
 6 before 7 on purpose. 6 says the machine is currently in the right state; 7
@@ -78,7 +78,7 @@ def steps() -> list[tuple]:
          REPO / "hermes" / "apply_approval_patch.py", [], agent, None, True),
         ("gateway launcher + task policy",
          REPO / "hermes" / "gateway_launcher.py", ["--install"], agent, None, False),
-        ("startup guard (all six conditions)",
+        ("startup guard (all seven conditions)",
          REPO / "hermes" / "check_telegram_surface.py", [], hermes, checkout, True),
         ("guard negative tests",
          REPO / "tests" / "test_surface_guard.py", [], agent, None, True),
@@ -134,7 +134,7 @@ def main() -> int:
               "guard will refuse anyway, and now it will say so over Telegram.")
         return 1
 
-    print("\nPASS -- every patch re-applied, all six guard conditions hold, "
+    print("\nPASS -- every patch re-applied, all seven guard conditions hold, "
           "and the guard still refuses each of them when broken.")
     print("Restart the gateway to pick this up: hermes gateway restart")
     return 0

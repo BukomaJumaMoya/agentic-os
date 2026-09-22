@@ -495,6 +495,13 @@ def main() -> None:
         fatal(AGENT, exc)
         return
 
+    # readOnlyHint decides whether Hermes asks a human before the call. On a
+    # `trust: untrusted` server -- which all three of ours are -- any tool NOT
+    # annotated readOnlyHint: True is gated (Hermes
+    # tools/mcp_tool_handlers.py:_trust_gate_check). So the annotation here is
+    # what keeps a read from prompting, and its ABSENCE on pm_action below is
+    # what makes a write prompt. Moving it is a security change, and
+    # hermes/surface-manifest.json's write_tools list is checked against it.
     @boot.tool(
         name="pm_query",
         description=(
@@ -502,6 +509,7 @@ def main() -> None:
             "list spaces, folders, lists, tasks and comments, and search tasks. "
             "It cannot create, change or delete anything."
         ),
+        annotations={"readOnlyHint": True},
     )
     def pm_query(question: str) -> dict:
         question = str(question or "").strip()

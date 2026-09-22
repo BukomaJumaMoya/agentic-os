@@ -74,7 +74,10 @@ GOOD_CONFIG = {
     "command_allowlist": [],
     "gateway": {"platforms": {"telegram": {"allow_list": [4242424242]}}},
     "mcp_servers": {
-        name: {"tools": {"include": sorted(tools)}}
+        # trust: untrusted is what arms Hermes' per-tool write-approval gate,
+        # so it belongs in the HEALTHY fixture -- condition 7 breaks it on
+        # purpose below.
+        name: {"trust": "untrusted", "tools": {"include": sorted(tools)}}
         for name, tools in guard.manifest_servers(GOOD_MANIFEST).items()
     },
 }
@@ -287,6 +290,108 @@ def test_unreadable_manifest_fails_closed() -> None:
               "manifest_tools() accepted a tool with no owner")
 
 
+# --------------------------------------------------------------------------
+# condition 7 -- write approval is armed
+# --------------------------------------------------------------------------
+
+def test_write_approval_armed() -> None:
+    manifest = GOOD_MANIFEST_FOR_CONFIG
+
+    for bad in ("full", "", None, "untrused"):
+        cfg = copy(GOOD_CONFIG)
+        if bad is None:
+            cfg["mcp_servers"]["pm"].pop("trust", None)
+        else:
+            cfg["mcp_servers"]["pm"]["trust"] = bad
+        refuses(f"pm server trust={bad!r} (approval off)",
+                guard.check_write_approval_armed(cfg, manifest),
+                mentioning="write approval is OFF")
+
+    cfg = copy(GOOD_CONFIG)
+    cfg["mcp_servers"] = {}
+    refuses("no mcp_servers at all",
+            guard.check_write_approval_armed(cfg, manifest),
+            mentioning="no mcp_servers")
+
+    broken = dict(manifest, write_tools=["pm_action", "wire_transfer"])
+    refuses("write_tools names a tool the manifest does not declare",
+            guard.check_write_approval_armed(GOOD_CONFIG, broken),
+            mentioning="wire_transfer")
+
+    # A manifest with no write list must RAISE, not return "fine". check()
+    # turns a raising condition into a refusal, so raising is the fail-closed
+    # answer; returning ok would mean "no writes to gate" and wave them all
+    # through.
+    for missing in ([], None):
+        m = dict(manifest)
+        if missing is None:
+            m.pop("write_tools", None)
+        else:
+            m["write_tools"] = missing
+        raised = False
+        try:
+            guard.check_write_approval_armed(GOOD_CONFIG, m)
+        except Exception:
+            raised = True
+        check(f"manifest write_tools={missing!r} raises rather than passing",
+              raised, "the check accepted a manifest with no write_tools")
+
+    check("the armed configuration passes",
+          guard.check_write_approval_armed(GOOD_CONFIG, manifest)[0] is True,
+          "the healthy case was refused")
+
+
+def test_annotations_match_the_manifest() -> None:
+    """The gate is aimed by readOnlyHint, so check what the agents PUBLISH.
+
+    Everything else here works on config and the manifest, which are two
+    descriptions of a system. This one starts the three agents over real MCP
+    stdio and reads the annotations off the wire, because that is the value
+    Hermes' gate actually keys on -- and a write tool that gained
+    readOnlyHint: True would lose its approval prompt while every static check
+    in this file still passed.
+    """
+    import subprocess
+    sys.path.insert(0, str(REPO / "tests"))
+    from mcp_client import MCPStdioClient
+
+    python = REPO / "agents" / ".venv" / "Scripts" / "python.exe"
+    if not python.exists():                                # pragma: no cover
+        check("agent venv present", False, f"{python} not found")
+        return
+
+    writes = guard.manifest_write_tools(GOOD_MANIFEST)
+    owners = guard.manifest_servers(GOOD_MANIFEST)
+    directories = {"research": "research", "pm": "pm", "coding_agent": "coding"}
+
+    for server, declared in sorted(owners.items()):
+        main = REPO / "agents" / directories[server] / "main.py"
+        try:
+            with MCPStdioClient([str(python), str(main)],
+                                cwd=str(main.parent), timeout=180) as client:
+                published = {t["name"]: (t.get("annotations") or {})
+                             for t in client.list_tools()}
+        except Exception as exc:                            # pragma: no cover
+            check(f"{server}: starts over stdio", False,
+                  f"{type(exc).__name__}: {exc}")
+            continue
+
+        check(f"{server}: publishes exactly its manifest tools",
+              set(published) == declared,
+              f"published {sorted(published)}, manifest says {sorted(declared)}")
+
+        for tool in sorted(declared & set(published)):
+            read_only = published[tool].get("readOnlyHint") is True
+            if tool in writes:
+                check(f"{server}.{tool}: write tool is NOT annotated read-only",
+                      not read_only,
+                      "readOnlyHint is True, so Hermes would run it without asking")
+            else:
+                check(f"{server}.{tool}: read tool IS annotated read-only",
+                      read_only,
+                      "missing readOnlyHint, so every call would prompt for approval")
+
+
 def test_broken_check_counts_as_failure() -> None:
     """check() wraps every condition: one that raises is a refusal, not a skip."""
     source = (REPO / "hermes" / "check_telegram_surface.py").read_text(encoding="utf-8")
@@ -305,6 +410,8 @@ def main() -> int:
                  test_telegram_allow_list,
                  test_mcp_includes_disagree,
                  test_surface_tool_not_in_manifest,
+                 test_write_approval_armed,
+                 test_annotations_match_the_manifest,
                  test_unreadable_manifest_fails_closed,
                  test_broken_check_counts_as_failure):
         func()

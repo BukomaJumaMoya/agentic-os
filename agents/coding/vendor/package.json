@@ -1,1 +1,9 @@
-{"name":"juma-coding-agent-vendor","private":true,"description":"Local install of the Pi coding agent, pinned. Not a published package.","dependencies":{"@earendil-works/pi-coding-agent":"^0.86.1"}}
+{
+  "name": "juma-coding-agent-vendor",
+  "private": true,
+  "description": "Local install of the Pi coding agent, pinned. Not a published package.",
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "^0.86.1",
+    "@upstash/context7-mcp": "4.1.1"
+  }
+}

@@ -27,9 +27,22 @@ code rather than asserted in a prompt.
      │
      └── stdio MCP ──▶  coding_agent     start_code_task · get_status
                         · get_result · list_changed_files
+                        · github_query · github_action · docs_query
                         Pi in Docker. Confined to the dev root, new branch per
                         task, never pushes, .env files masked out of the mount.
+                             │
+                             ├── MCP client ──▶ github-mcp-server (Docker)
+                             │                  32 tools upstream, 13 allowed.
+                             │                  No merge, no delete, no admin,
+                             │                  no workflows.
+                             │
+                             └── MCP client ──▶ context7 (node)
+                                                library docs, read only.
 ```
+
+Third-party MCP servers attach to an **agent**, never to Hermes — the agent is
+the MCP client, applies its own allowlist, and exposes only its own tools. See
+`documentation/MCP-SERVERS.md`.
 
 The server is `coding_agent`, not `coding`, and the name is load-bearing —
 see "The Telegram tool surface" below.
@@ -282,7 +295,7 @@ one update away from silently not existing, and that has already happened once.
 | 3 | `configure_gemini.py restore` — model chain, reasoning-effort assertion |
 | 4 | `apply_approval_patch.py` — secret-store reads require approval |
 | 5 | `gateway_launcher.py --install` — the task reaches the guard |
-| 6 | `check_telegram_surface.py` — all six conditions, under Hermes' interpreter |
+| 6 | `check_telegram_surface.py` — all seven conditions, under Hermes' interpreter |
 | 7 | `tests/test_surface_guard.py` — the negative tests |
 
 6 before 7 on purpose: 6 says the machine is in the right state, 7 says the
@@ -479,14 +492,22 @@ agents/.venv/Scripts/python tests/test_pm_agent.py         # --live hits real Cl
 agents/.venv/Scripts/python tests/test_coding_agent.py     # --live runs Pi
 ```
 
-263 assertions, 0 failing, as of 2026-09-22.
+298 assertions, 0 failing, as of 2026-09-22.
 
-`test_surface_guard.py` is deliberately all negatives. The guard returning OK on
-a healthy machine proves almost nothing — a function that returns `(True, "")`
-unconditionally passes that test too. So each of the six conditions gets a
-deliberately broken input, and each is asserted to fail *and* to say why. None
-of it edits config.yaml or the Hermes checkout: a test that has to break the
-running system will eventually be run by someone who forgets to put it back.
+`test_surface_guard.py` is deliberately almost all negatives. The guard
+returning OK on a healthy machine proves almost nothing — a function that
+returns `(True, "")` unconditionally passes that test too. So each of the seven
+conditions gets a deliberately broken input, and each is asserted to fail *and*
+to say why. None of it edits config.yaml or the Hermes checkout: a test that has
+to break the running system will eventually be run by someone who forgets to put
+it back.
+
+Its one positive test is the exception that has to be live:
+`test_annotations_match_the_manifest` starts all three agents over real MCP
+stdio and reads each tool's `readOnlyHint` **off the wire**, because that
+annotation is what Hermes' write-approval gate keys on. A write tool that gained
+`readOnlyHint: true` would silently lose its approval prompt while every static
+check in the file still passed.
 
 The agents are exercised over real MCP stdio, not by importing their functions:
 that is the only way to catch a server that fails to start, a malformed tool
@@ -546,6 +567,38 @@ It also leaves `tests/` and `archive/pre-hermes/` alone: those contain
 deliberately fake credentials whose purpose is to prove the redaction layer
 removes them. Scrubbing them would delete the evidence that redaction works.
 
+## Write approval
+
+Three tools change something outside this machine: `pm_action`,
+`start_code_task` and `github_action`. Each one now requires a human to approve
+it **before the call is sent**, and that is enforced by Hermes, not asked for in
+a prompt.
+
+`mcp_servers.<name>.trust: untrusted` arms Hermes' own gate
+(`tools/mcp_tool_handlers.py:_trust_gate_check`); the `readOnlyHint` annotation
+each agent publishes aims it. On an untrusted server, a tool whose hint is not
+exactly `True` is gated. So the three write tools are deliberately *not*
+annotated, every read tool is, and no plugin was written — Hermes already had
+this and a second approval path beside a working one would be worse than none.
+
+Verified by calling the gate directly under Hermes' interpreter, with no model
+involved:
+
+| case | result |
+|---|---|
+| untrusted + `pm_action` (write) | **BLOCKED** |
+| untrusted + `pm_query` (`readOnlyHint: true`) | allowed |
+| untrusted + unknown tool (no hint) | **BLOCKED** |
+| untrusted + hint is the *string* `"true"` | **BLOCKED** |
+| `trust: full` + `pm_action` | allowed — **the gate is disarmed** |
+
+That last row is why guard condition 7 exists. `full` is Hermes' compatibility
+default, so an `mcp_servers` block written by hand, or regenerated by an older
+script, arrives with approval off and nothing says so.
+
+Full detail, including the GitHub and Context7 allowlists, is in
+`documentation/MCP-SERVERS.md`.
+
 ## Known open items
 
 Carried forward deliberately, with what each one needs.
@@ -555,7 +608,8 @@ Carried forward deliberately, with what each one needs.
 | Scheduled task still restarts **999** times, not 3 | one elevated `Set-ScheduledTask`; the task's ACL denies a standard user, and `schtasks /create /xml /f` and `Register-ScheduledTask` are denied too |
 | Windows Event Log alerts are not written | one elevated `New-EventLog -LogName Application -Source Hermes_Gateway`; the launcher reports this rather than failing silently, and the Telegram and file channels work regardless |
 | T3b re-test outstanding | the SOUL rule against delegating non-coding shell/file requests is installed but has not been re-tested over a real Telegram message |
-| T2 returned no program output | `get_result` gave Hermes a report with no stdout in it, and `executor_end` recorded `tool_calls: 1` — one write, no run. Whether Pi never ran the file or Hermes dropped the output is **not decidable from the logs**, because the coding agent logs that the executor finished but not what it reported, and the job registry is in-process |
+| Telegram approval prompt unexercised | the write-approval gate is proven deterministic locally, but the prompt has not been answered from a phone. Code path is `_is_gateway_approval_context()` → `_await_gateway_decision`, the same round trip the dangerous-command gate already uses |
+| Kolaborate MCP not wired | needs a `kola_live_…` key minted from their dashboard. It is a hosted service with no public repo, no version to pin and no published licence — see `documentation/MCP-SERVERS.md` |
 | Disclosed identifiers are not rotated | the bot token and chat ID were published in this repository's history. Redaction stops new exposure; it does not undo the old one |
 | `documentation/STATUS.md` records `external_action.py` still POSTing to a dead `/message/send` route | archived pre-Hermes code, unreachable from any production path; left as history rather than repaired |
 | CI has never passed | unchanged from `STATUS.md`; no automated check has ever validated this repository |

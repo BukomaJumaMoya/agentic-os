@@ -15,8 +15,11 @@ The pieces:
     guard   incoming instructions and fetched text are data, never rules
     paths   filesystem confinement
     server  MCPServer construction over stdio
+    mcp_client  the reverse direction: an agent as a client of a
+            third-party MCP server, with its own allowlist and fencing
 """
 
-__all__ = ["env", "errors", "audit", "llm", "jobs", "guard", "paths", "server"]
+__all__ = ["env", "errors", "audit", "llm", "jobs", "guard", "paths", "server",
+           "mcp_client"]
 
 SCAFFOLD_VERSION = "1.0.0"

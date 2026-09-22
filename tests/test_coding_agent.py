@@ -304,9 +304,23 @@ def test_server_tools() -> None:
     with MCPStdioClient([PY, AGENT_PATH]) as client:
         tools = client.list_tools()
     names = sorted(t["name"] for t in tools)
-    check("declares exactly the four coding tools",
-          names == ["get_result", "get_status", "list_changed_files",
-                    "start_code_task"], str(names))
+    check("declares exactly its seven tools",
+          names == ["docs_query", "get_result", "get_status", "github_action",
+                    "github_query", "list_changed_files", "start_code_task"],
+          str(names))
+
+    # The agent owns two third-party MCP servers (GitHub, Context7) and calls
+    # them as a client. Their tools must NOT appear here: the whole point of
+    # the placement rule is that Hermes sees `github_query`, never
+    # `merge_pull_request`. A leak would be invisible in config.yaml, because
+    # these servers are not in config.yaml at all.
+    leaked = sorted(set(names) & {
+        "merge_pull_request", "delete_file", "create_repository",
+        "fork_repository", "create_branch", "create_or_update_file",
+        "push_files", "create_pull_request", "get_file_contents",
+        "search_code", "resolve-library-id", "query-docs"})
+    check("no downstream GitHub or Context7 tool is re-exported",
+          leaked == [], f"leaked: {leaked}")
 
 
 def test_server_rejects_paths_outside_dev_root() -> None:
