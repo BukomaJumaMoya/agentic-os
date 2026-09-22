@@ -289,7 +289,8 @@ def as_tools(available: list[dict]) -> list[dict]:
 
 
 def loop(boot, downstream: "Downstream", *, system: str, instruction: str,
-         task: bool = False, max_steps: int = 8, max_tokens: int = 1500) -> dict:
+         task: bool = False, once_only: set[str] | None = None,
+         max_steps: int = 8, max_tokens: int = 1500) -> dict:
     """Let the model drive one downstream server until it answers.
 
     The same shape as the pm agent's ClickUp loop, for the same reason: the
@@ -311,6 +312,13 @@ def loop(boot, downstream: "Downstream", *, system: str, instruction: str,
     wrap = guard.task_block if task else guard.instruction_block
     messages: list[dict] = [{"role": "user", "content": wrap(instruction)}]
     performed: list[dict] = []
+    # Tools that may be called at most once per invocation, enforced HERE
+    # rather than asked for in the prompt. `docs_query` spent eight of eight
+    # steps re-resolving the same library id and never fetched the document;
+    # telling it not to in words reduced that to five. A budget the model can
+    # ignore is not a budget.
+    once_only = set(once_only or ())
+    spent: set[str] = set()
 
     for step in range(max_steps):
         reply = boot.llm.complete(system=system, user="", messages=messages,
@@ -332,8 +340,20 @@ def loop(boot, downstream: "Downstream", *, system: str, instruction: str,
                 args = json.loads(function.get("arguments") or "{}")
             except Exception:
                 args = {}
+            if name in once_only and name in spent:
+                content = json.dumps({
+                    "error": "already_called",
+                    "detail": (f"'{name}' may be called once per request and you "
+                               f"have already called it. Use the result you "
+                               f"have and move on to the next step.")})
+                performed.append({"tool": name, "args": args, "ok": False,
+                                  "error": "already_called"})
+                messages.append({"role": "tool", "tool_call_id": call.get("id"),
+                                 "content": content})
+                continue
             try:
                 content = downstream.call(name, args)
+                spent.add(name)
                 performed.append({"tool": name, "args": args, "ok": True})
             except AgentError as exc:
                 content = json.dumps({"error": exc.code, "detail": exc.detail})

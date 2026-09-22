@@ -493,3 +493,64 @@ identical write re-prompts. That remains open.
 Messages #6 and #8 were not sent as messages; #9 arrived as a literal paste of
 the instruction line. So: **no `/reject`, no deliberate approve-then-replay.**
 Those are the only approval paths still unexercised.
+
+---
+
+# Approval paths, 2026-09-23 02:15–02:18
+
+The two paths the earlier run never exercised. Both **PASS**.
+
+## Reject
+
+```
+02:15:39  inbound: 'code: create notes.txt in D:\...\Dev\scratch\w4-demo'
+02:15:49  Telegram button resolved 1 approval(s) … (choice=deny)
+02:15:49  MCP trust gate: user denied 'start_code_task' on untrusted server 'coding_agent'
+02:15:49  Tool mcp__coding_agent__start_code_task returned error:
+            "The user did not approve running write-capable …"
+```
+
+The tool call returned a refusal. No branch, no file, no job.
+
+## Replay — refused, which is the point
+
+The same message twice, both approved:
+
+```
+02:16:53  inbound (first)
+02:17:05  button resolved (choice=once)  -> start_code_task ran
+02:17:36  inbound (second, identical)
+02:17:57  button resolved (choice=once)  -> start_code_task ran
+```
+
+**A second prompt was raised for the second call.** The first approval did not
+carry over. Two independent branches exist on disk, one per approved run:
+
+```
+agent/backend-20260923-021705-create-notes-txt-with-some-sampl
+agent/backend-20260923-021757-create-notes-txt-with-some-sampl
+```
+
+So a captured or remembered approval cannot be replayed into a second
+execution: each write is gated on its own.
+
+## The "Always Allow" button, now removed
+
+Both of these came back `choice=once` because that is what was pressed. The
+earlier run came back `choice=always` — and that button should never have been
+offered. `request_elicitation_consent` passes `allow_permanent=False` on the
+CLI branch only; the gateway branch passed nothing, so the renderer defaulted
+to offering the session and permanent tiers.
+
+Nothing implemented the standing grant, so the behaviour was already correct —
+but the prompt advertised a guarantee in the opposite direction, which is worse
+than either answer alone. `hermes/patch_elicitation_percall.py` now passes the
+flags on the gateway branch and carries them through `_await_gateway_decision`,
+which built its payload from a fixed key list and dropped them.
+
+Measured after the patch:
+
+```
+dangerous-command gate (unchanged): ['once', 'session', 'always', 'deny']
+MCP elicitation (per-call now):     ['once', 'deny']
+```

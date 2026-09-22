@@ -481,6 +481,40 @@ def test_every_guarded_surface_is_checked() -> None:
               "the healthy case was refused")
 
 
+def test_mcp_approval_is_per_call() -> None:
+    """An MCP write approval must offer Allow Once / Deny, and nothing standing.
+
+    request_elicitation_consent's own comment says elicitation is "a per-call
+    confirmation -- no pattern to remember", and it passed allow_permanent=False
+    on the CLI branch only. The gateway branch passed nothing, so Telegram
+    rendered "Always Allow" and two live approvals came back choice=always -- a
+    standing grant that nothing in Hermes implements.
+    """
+    prompt = (REPO / "hermes" / "patch_elicitation_percall.py").read_text(encoding="utf-8")
+    check("the per-call patch exists and is marker-guarded",
+          'MARKER = "juma-rebuild: elicitation is per-call"' in prompt, "")
+
+    home = guard.hermes_home() / "hermes-agent" / "tools"
+    for name, needle in (("approval_prompt.py", '"allow_permanent": False'),
+                         ("approval_gateway_wait.py", 'approval_data.get("allow_permanent"')):
+        path = home / name
+        if not path.exists():
+            check(f"{name} present", False, f"{path} not found")
+            continue
+        check(f"{name} carries the per-call flags",
+              needle in path.read_text(encoding="utf-8", errors="replace"),
+              "run hermes/patch_elicitation_percall.py")
+
+    # The dangerous-command gate legitimately keeps session/always; only the
+    # elicitation path is per-call. Assert the distinction still exists.
+    base = home.parent / "gateway" / "platforms" / "base.py"
+    if base.exists():
+        source = base.read_text(encoding="utf-8", errors="replace")
+        check("the renderer still gates 'always' behind allow_permanent",
+              'if allow_permanent:' in source and 'choices.append("always")' in source,
+              "the permanent tier is no longer conditional")
+
+
 def test_broken_check_counts_as_failure() -> None:
     """check() wraps every condition: one that raises is a refusal, not a skip."""
     source = (REPO / "hermes" / "check_telegram_surface.py").read_text(encoding="utf-8")
@@ -503,6 +537,7 @@ def main() -> int:
                  test_annotations_match_the_manifest,
                  test_gate_sees_annotations,
                  test_every_guarded_surface_is_checked,
+                 test_mcp_approval_is_per_call,
                  test_unreadable_manifest_fails_closed,
                  test_broken_check_counts_as_failure):
         func()

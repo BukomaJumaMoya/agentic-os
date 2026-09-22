@@ -79,6 +79,8 @@ def steps() -> list[tuple]:
          REPO / "hermes" / "apply_approval_patch.py", [], agent, None, True),
         ("readOnlyHint alias patch",
          REPO / "hermes" / "patch_readonly_hint.py", [], agent, None, True),
+        ("elicitation per-call patch",
+         REPO / "hermes" / "patch_elicitation_percall.py", [], agent, None, True),
         ("gateway launcher + task policy",
          REPO / "hermes" / "gateway_launcher.py", ["--install"], agent, None, False),
         ("startup guard (all eight conditions)",

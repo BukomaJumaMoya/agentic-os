@@ -139,9 +139,15 @@ def main() -> None:
                                    audit=boot.audit) as kola:
             boot.audit.write("kola_operation", operation=operation,
                              arg_keys=sorted(arguments or {}))
+            # kola_call's own field names are `tool` and `args`. Not `name`/
+            # `arguments`, which is what the MCP envelope around it uses and
+            # what the first version of this sent -- the server answered
+            # `MCP error -32602: Missing required 'tool'`, and that was read as
+            # "their service is down" and written up as BLOCKED. It was not
+            # down; the shape was wrong. Probe before blaming the far end.
             return {"operation": operation,
                     "result": kola.call(TOOL_CALL,
-                                        {"name": operation, "arguments": arguments or {}})}
+                                        {"tool": operation, "args": arguments or {}})}
 
     @boot.tool(
         name="kola_catalogue",
