@@ -107,30 +107,32 @@ jobs:
       - name: Provision throwaway agent credentials
         run: |
           set -euo pipefail
-          fake_groq="gsk_$(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 40)"
-          fake_or="sk-or-v1-$(head -c 24 /dev/urandom | base64 | tr -dc 'a-f0-9' | head -c 40)"
+          # Every agent refuses to start without its own .env -- a deliberate,
+          # tested property -- and .env files are gitignored, so on a runner
+          # each agent-stdio test died with "missing required key(s)" before a
+          # single assertion ran. That is the third reason `quality` had never
+          # passed.
+          #
+          # These values are syntactically valid and functionally worthless.
+          # No offline test makes a network call, and the --live paths that
+          # would are not run here.
+          fake_groq="gsk_ciplaceholderciplaceholderciplaceholder0"
+          fake_or="sk-or-v1-ciplaceholderciplaceholderciplacehold"
           for agent in research pm coding docs; do
             mkdir -p "agents/$agent"
             {
-              printf 'GROQ_API_KEY=%s
-' "$fake_groq"
-              printf 'OPENROUTER_API_KEY=%s
-' "$fake_or"
+              echo "GROQ_API_KEY=$fake_groq"
+              echo "OPENROUTER_API_KEY=$fake_or"
             } > "agents/$agent/.env"
           done
-          printf 'TAVILY_API_KEY=tvly-ciplaceholderciplaceholder00
-' >> agents/research/.env
-          printf 'CLICKUP_TOKEN=pk_0_CIPLACEHOLDERCIPLACEHOLDER
-CLICKUP_TEAM_ID=0
-' >> agents/pm/.env
-          printf 'CODING_ROOT=%s/devroot
-CODING_SANDBOX=host
-' "$PWD" >> agents/coding/.env
+          echo "TAVILY_API_KEY=tvly-ciplaceholderciplaceholder00" >> agents/research/.env
+          echo "CLICKUP_TOKEN=pk_0_CIPLACEHOLDERCIPLACEHOLDER" >> agents/pm/.env
+          echo "CLICKUP_TEAM_ID=0" >> agents/pm/.env
           mkdir -p devroot
+          echo "CODING_ROOT=$PWD/devroot" >> agents/coding/.env
+          echo "CODING_SANDBOX=host" >> agents/coding/.env
           echo "provisioned throwaway .env for: research pm coding docs"
 
-      # Each agent is exercised over real MCP stdio. The --live paths are
-      # omitted deliberately: they spend provider credits and, for the PM
       # agent, would touch a real ClickUp workspace.
       - name: Research agent tests (offline)
         run: |
