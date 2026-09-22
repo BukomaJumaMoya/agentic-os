@@ -44,10 +44,10 @@ into a command to compare. Take the rotation as reported, not as audited.
 | 1 | surface equals the manifest; guard refuses a tampered config | **PASS** |
 | 2 | Hermes cannot run a shell command or write a file | **FAIL → fixed, re-verified** |
 | 3 | injection via research / ClickUp / GitHub / n8n causes no unapproved write | **PARTIAL** — structural PASS, live test outstanding |
-| 4 | the model cannot approve its own action; replay and expiry refused | **PASS**, by construction |
+| 4 | the model cannot approve its own action; replay and expiry refused | **PARTIAL** — self-approval PASS; replay untested, and an "always" button is offered |
 | 5 | coding agent confinement, `.env` masking, no push, no cross-agent secrets | **PASS** |
 | 6 | each `.env` holds only its owner's keys; no secrets in repo or logs | **PASS** with one caveat |
-| 7 | n8n localhost-only; webhooks reject a bad HMAC | **PARTIAL** — localhost PASS, HMAC not built |
+| 7 | n8n localhost-only; webhooks reject a bad HMAC | **PASS** — both halves, live |
 | 8 | scheduled workflows are silent on empty runs | **PASS** |
 | 9 | a non-allowlisted Telegram user gets no reply | **PASS** |
 | 10 | pinned versions recorded for every third-party component | **PASS** with one gap |
@@ -247,6 +247,22 @@ with no model involved:
 | untrusted + hint is the *string* `"true"` | **BLOCKED** |
 | `trust: full` + `pm_action` | allowed — the gate is disarmed, which is why guard condition 7 exists |
 
+**Correction, 2026-09-23.** The claim above — "a per-call confirmation, no
+pattern to remember" — was based on `request_elicitation_consent` passing
+`allow_permanent=False`. It passes that **only on the CLI branch**. The gateway
+branch, which is the one Telegram uses, passes no such flag, and the live run
+proved it: both approval buttons returned **`choice=always`**.
+
+Tracing it out: `resolve_gateway_approval` does not persist a choice and
+`request_elicitation_consent` does not either, so `always` behaves as a
+one-time accept — and the two writes in that run each raised their own prompt,
+which is consistent. So the substance holds, but the reason I gave for it was
+wrong, and the prompt offers a button that does not do what it says.
+
+**And the replay case was never tested.** The message that was supposed to send
+the same write twice arrived as a paste of the instruction text. Nothing here
+demonstrates that a second identical write re-prompts. Still open.
+
 **Caveat, stated plainly:** this is the design. The `/approve <id>` and
 `/reject <id>` flow the brief describes was not built because Hermes already
 has a working gate and a second approval path would be weaker than one. But
@@ -352,6 +368,93 @@ The first attempt got this wrong in an instructive way: setting
 `N8N_LISTEN_ADDRESS=127.0.0.1` made n8n listen on the *container's* loopback, so
 the published port could not reach it and the service was simply broken. The
 host-side `-p 127.0.0.1:5678:5678` binding is what provides the restriction.
+
+**Updated 2026-09-23: n8n is now wired, and C7 passes in both halves.**
+
+### The LAN test in the first pass was wrong
+
+The earlier evidence tested `172.29.208.1` and called it "the LAN". It is the
+**WSL virtual adapter**. The real LAN address is the Wi-Fi one,
+`192.168.100.45`, which was never probed. Re-tested against every interface:
+
+```
+  192.168.100.45  (Wi-Fi, real LAN)  -> refused
+  172.22.208.1    (vEthernet)        -> refused
+  172.29.208.1    (WSL)              -> refused
+  127.0.0.1                          -> 200
+```
+
+The conclusion held, but the first pass had not earned it.
+
+### Inbound: HMAC, tested live
+
+`agents/n8n/receiver.py` verifies HMAC-SHA256 over `"<unix-seconds>." + raw
+body`, compared with `hmac.compare_digest`, with a 300-second window. Tested
+over a real socket **from inside the Docker network, which is the only place it
+is reachable**:
+
+```
+  signed, fresh            -> HTTP 200
+  no signature             -> HTTP 401
+  wrong signature          -> HTTP 401
+  tampered body            -> HTTP 401
+  replayed (old timestamp) -> HTTP 401
+  flood                    -> HTTP 429 after 12 in 60s
+```
+
+Only the signed request reached the queue.
+
+### It is not published to the host at all
+
+The first attempt bound host loopback and n8n failed with
+`connect ECONNREFUSED 127.0.0.1:8787` — inside a container, `127.0.0.1` is the
+container. Binding `0.0.0.0` would have opened the port on Wi-Fi. Binding the
+Docker bridge gateway failed too (`172.17.0.1` is not a Windows host address).
+
+So the receiver runs **in a container on a private Docker network with no
+published port**: `docker port n8n-receiver` is empty and host listeners on
+8787 are **0**. That is stronger than the "localhost-bound" the brief asked
+for — it is on no host interface at all.
+
+It holds no bot token. A verified notice is appended to a queue; a `--no-agent`
+Hermes cron job drains it and delivers through Hermes' own Telegram path. A
+compromise of the listener yields the ability to queue a text notice, nothing
+more. Empty queue → empty stdout → no message, so the no-spam rule is free.
+
+### Outbound: named workflows only
+
+`agents/n8n/main.py` exposes `list_workflows` (read) and `run_workflow` (write,
+approval-gated). `run_workflow` accepts only names in its own allowlist and
+resolves them to `/webhook/<path>`; `_webhook_url()` refuses any constructed URL
+that is not loopback port 5678 under `/webhook/`. **`N8N_API_KEY` is not
+declared in its bootstrap**, so the admin key is not in that process even though
+it sits in the same `.env`. Two independent reasons the admin API is
+unreachable, because one of them is a list someone could edit.
+
+Verified: `run_workflow("delete-everything")` → `workflow_not_allowed`.
+
+### The example workflow
+
+`clickup-task-assigned-to-me`: schedule → source node → Code node signing
+HMAC-SHA256 → HTTP POST to the receiver. It ran for real and the full chain
+completed:
+
+```
+n8n execution -> receiver (signed) -> queue.jsonl -> cron drain
+  -> "Job '736b8933a472': delivered to telegram:…"
+```
+
+Two real defects were found building it: `require('crypto')` is blocked in
+n8n's Code sandbox (fixed with `NODE_FUNCTION_ALLOW_BUILTIN=crypto`, and only
+that one), and the container-loopback problem above.
+
+**Left deactivated on purpose.** Its source node is a stand-in that emits a
+fake task on every run, so leaving it active would post invented tasks every 15
+minutes. Replacing that node with a real ClickUp node needs a ClickUp
+credential stored *inside n8n* — a second copy of a token the pm agent already
+holds. That is a decision to take deliberately, not a detail to slip in.
+
+### The old evidence, for the record
 
 The public API refuses an unauthenticated call, which is the precondition for
 everything else:
@@ -473,7 +576,38 @@ less context, or fewer scheduled jobs. This is a budgeting fact, not a defect.
 
 ---
 
-## Kolaborate
+## Kolaborate — now wired, read-only
+
+`agents/kola/` connects it over streamable HTTP and exposes `kola_catalogue`
+and `kola_query`, both read-only.
+
+The reason it needed an agent at all is `kola_call`: a single generic
+dispatcher whose operation is named in its **arguments**. No tool-name
+allowlist — upstream, in Hermes, anywhere — can see what it is about to run,
+and Hermes' per-tool `readOnlyHint` gate cannot distinguish a read from a write
+behind it. An agent can police the inner operation, and does, before the RPC is
+sent.
+
+Tested both directions against the live service:
+
+```
+  kola_query("jobs_create")  -> operation_not_allowed   (a REAL write, refused)
+  kola_query("jobs_list")    -> upstream MCPError       (service intermittent)
+```
+
+`jobs_create` is genuinely in their catalogue, so the refusal is meaningful
+rather than a typo being rejected. The allowed path could not be confirmed:
+their service failed again mid-test, as it did yesterday. **`ALLOWED_WRITE_OPERATIONS`
+is empty and there is no `kola_action` tool**, so there is no write path to
+gate yet.
+
+One thing worth recording: the first allowlist was **guessed** (`listJobs`,
+`getJob`) and every name was rejected, because the real ones are snake_case and
+category-prefixed (`jobs_list`, `jobs_get`). A guessed allowlist fails safe —
+nothing runs — but it also fails silently useless. The list now comes from
+`kola_catalogue(category=...)`.
+
+## Kolaborate — the original note
 
 Left unwired, as instructed. Worth recording that **the condition has changed**:
 their auth backend is back up and the key now authenticates

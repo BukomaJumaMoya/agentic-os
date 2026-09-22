@@ -367,7 +367,8 @@ def test_annotations_match_the_manifest() -> None:
     # and `docs_agent` are named to avoid colliding with a built-in
     # toolset, while their directories are plain.
     directories = {"research": "research", "pm": "pm",
-                   "coding_agent": "coding", "docs_agent": "docs"}
+                   "coding_agent": "coding", "docs_agent": "docs",
+                   "n8n_agent": "n8n", "kola_agent": "kola"}
     missing = sorted(set(owners) - set(directories))
     check("every manifest server has a known directory", not missing,
           f"no directory mapped for {missing}; add it here")

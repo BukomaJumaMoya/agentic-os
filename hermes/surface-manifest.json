@@ -36,7 +36,8 @@
   "write_tools": [
     "pm_action",
     "start_code_task",
-    "github_action"
+    "github_action",
+    "run_workflow"
   ],
 
   "tools": {
@@ -57,6 +58,12 @@
     "github_action": "coding_agent",
     "docs_query": "coding_agent",
 
-    "draft_proposal": "docs_agent"
+    "draft_proposal": "docs_agent",
+
+    "list_workflows": "n8n_agent",
+    "run_workflow": "n8n_agent",
+
+    "kola_catalogue": "kola_agent",
+    "kola_query": "kola_agent"
   }
 }

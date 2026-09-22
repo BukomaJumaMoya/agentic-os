@@ -66,6 +66,14 @@ AGENT_SPEC = {
     # that whole toolset (see harden_telegram_surface.py), and checking a new
     # name against `hermes tools list` is cheaper than finding out later.
     "docs_agent": ("docs", ["draft_proposal"]),
+    # n8n_agent, not n8n: same naming precaution. It can trigger only the
+    # workflows named in its own allowlist, and the n8n ADMIN api key is
+    # deliberately not declared in its bootstrap, so it is not in that
+    # process at all.
+    "n8n_agent": ("n8n", ["list_workflows", "run_workflow"]),
+    # Read-only today: ALLOWED_WRITE_OPERATIONS is empty and there is no
+    # kola_action tool, so there is no write path to gate.
+    "kola_agent": ("kola", ["kola_catalogue", "kola_query"]),
 }
 
 # EVERY server is `trust: untrusted`, and that word does not mean what it looks
@@ -101,6 +109,8 @@ TELEGRAM_TOOLSETS = [
     "pm",
     "coding_agent",
     "docs_agent",
+    "n8n_agent",
+    "kola_agent",
 ]
 
 # The SECOND surface, and it was wide open.
