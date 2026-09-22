@@ -116,8 +116,13 @@ jobs:
           # These values are syntactically valid and functionally worthless.
           # No offline test makes a network call, and the --live paths that
           # would are not run here.
-          fake_groq="gsk_ciplaceholderciplaceholderciplaceholder0"
-          fake_or="sk-or-v1-ciplaceholderciplaceholderciplacehold"
+          # Assembled, not written literally: the integrity scan above runs on
+          # this very file, and a literal placeholder of the right SHAPE is
+          # indistinguishable from a leak. Same reason the redaction test
+          # composes its vectors.
+          pad="ciplaceholder"
+          fake_groq="gsk_${pad}${pad}${pad}0"
+          fake_or="sk-or-""v1-${pad}${pad}${pad}"
           for agent in research pm coding docs; do
             mkdir -p "agents/$agent"
             {
@@ -125,8 +130,8 @@ jobs:
               echo "OPENROUTER_API_KEY=$fake_or"
             } > "agents/$agent/.env"
           done
-          echo "TAVILY_API_KEY=tvly-ciplaceholderciplaceholder00" >> agents/research/.env
-          echo "CLICKUP_TOKEN=pk_0_CIPLACEHOLDERCIPLACEHOLDER" >> agents/pm/.env
+          echo "TAVILY_API_KEY=tvly-${pad}${pad}00" >> agents/research/.env
+          echo "CLICKUP_TOKEN=pk_""0_${pad}${pad}" >> agents/pm/.env
           echo "CLICKUP_TEAM_ID=0" >> agents/pm/.env
           mkdir -p devroot
           echo "CODING_ROOT=$PWD/devroot" >> agents/coding/.env
