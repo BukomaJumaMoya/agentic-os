@@ -93,6 +93,42 @@ jobs:
           set -euo pipefail
           python tests/test_common_scaffold.py
 
+      # Throwaway credentials, so the agents can BOOT.
+      #
+      # Each agent refuses to start without its own .env -- that refusal is a
+      # tested property (`missing required key raises`). The .env files are
+      # gitignored, so on a runner every agent-stdio test died with
+      # "EnvError: ... is missing required key(s)" before a single assertion
+      # ran. That is the third reason `quality` had never passed.
+      #
+      # These values are syntactically valid and functionally worthless. No
+      # offline test makes a network call, and the --live paths that would are
+      # not run here. Written with printf, never echoed, and never committed.
+      - name: Provision throwaway agent credentials
+        run: |
+          set -euo pipefail
+          fake_groq="gsk_$(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 40)"
+          fake_or="sk-or-v1-$(head -c 24 /dev/urandom | base64 | tr -dc 'a-f0-9' | head -c 40)"
+          for agent in research pm coding docs; do
+            mkdir -p "agents/$agent"
+            {
+              printf 'GROQ_API_KEY=%s
+' "$fake_groq"
+              printf 'OPENROUTER_API_KEY=%s
+' "$fake_or"
+            } > "agents/$agent/.env"
+          done
+          printf 'TAVILY_API_KEY=tvly-ciplaceholderciplaceholder00
+' >> agents/research/.env
+          printf 'CLICKUP_TOKEN=pk_0_CIPLACEHOLDERCIPLACEHOLDER
+CLICKUP_TEAM_ID=0
+' >> agents/pm/.env
+          printf 'CODING_ROOT=%s/devroot
+CODING_SANDBOX=host
+' "$PWD" >> agents/coding/.env
+          mkdir -p devroot
+          echo "provisioned throwaway .env for: research pm coding docs"
+
       # Each agent is exercised over real MCP stdio. The --live paths are
       # omitted deliberately: they spend provider credits and, for the PM
       # agent, would touch a real ClickUp workspace.
@@ -110,6 +146,16 @@ jobs:
         run: |
           set -euo pipefail
           python tests/test_coding_agent.py
+
+      - name: Docs agent tests (offline)
+        run: |
+          set -euo pipefail
+          python tests/test_docs_agent.py
+
+      - name: n8n and kola boundary tests (offline)
+        run: |
+          set -euo pipefail
+          python tests/test_n8n_kola_boundaries.py
 
       - name: Documentation consistency check
         run: |
