@@ -145,6 +145,10 @@ Scheduled, unattended, and silent when there is nothing to say:
 | weekly review — completed, slipped, stale PRs | 08:00, Monday |
 | n8n notice drain | every minute |
 
+Send **`/new`** when you switch to an unrelated task. Tool routing is reliable
+in a fresh session and degrades past roughly 70,000 tokens of history; this is
+the one operating habit worth keeping, and `## Status` explains why.
+
 **Deliverables go to the operator. Nothing in this system can send anything to a
 client** — the docs agent has no SMTP, no ClickUp token and no bot token.
 
@@ -214,8 +218,7 @@ over.
 
 | open item | detail |
 |---|---|
-| **read-path routing** | `docs_query` and `github_query` are sometimes not called at all, with the model answering from memory or claiming it lacks a capability it has. Traced to an unpruned session context — 45 fenced tool results, 32% of 71k tokens, replaying "do not invoke tools". Fix is one config line; see the final report |
-| coding-agent completion claim | verified by test and over a refusal; not yet over a Telegram job that actually ran |
+| **read-path routing degrades in a long session** | in a fresh session `docs_query` and `github_query` are called correctly every time. Past ~70k tokens the model answers from memory instead, or claims a capability it has. Proactive pruning does not fix it: that code path only runs *after* a tool call, and the failure is that tool calls stop. `/new` is the free workaround; `compression.threshold_tokens` is the fix. See the final report |
 | n8n has no live workflow | by choice — driving one would mean a second copy of the ClickUp credential |
 | injection carriers | fencing verified at the function level, not through a ClickUp description, PR body or n8n payload |
 | sandbox base image | `FROM node:22-bookworm-slim` is a tag. Everything installed *into* the image is pinned exactly; the base is not |

@@ -821,9 +821,163 @@ Written before the test, so the result cannot be read to suit the hypothesis.
 I will not report "solved" on the strength of condition 1. An empty context
 routing correctly proves only that an empty context routes correctly.
 
-## Status
+## The two-condition test — run 22:29–22:32
 
-The config is applied, the guard passes, Telegram is connected, and the
-mechanical half is measured. Conditions 1 and 2, and the re-run of test C
-against `D:\Bukoma Juma Moya\Dev\scratch\c-demo`, need real inbound Telegram
-messages — which cannot be fabricated without simulating the thing under test.
+Condition 2 first, deliberately: `/new` would have made the loaded session
+stop being the active one.
+
+| | condition | result |
+|---|---|---|
+| **1** | fresh session, A and B | **both PASS** — `docs_query` and `github_query` called |
+| **2** | the same loaded session, pruning enabled | **both FAIL** — replies word-for-word identical to before |
+
+### Condition 1 — fresh session `20260923_222944_d19bf7e6`
+
+```
+22:29:55  inbound: 'What does the httpx AsyncClient timeout parameter do? Check the docs.'
+22:29:59  API call #1  in=8421
+22:30:30  tool mcp__coding_agent__docs_query completed (30.92s, 3272 chars)
+22:31:15  Turn ended  api_calls=2  response=389 chars
+
+22:31:26  inbound: 'In BukomaJumaMoya/agentic-os, what are the last 3 commits on master?'
+22:31:28  API call #3  in=9956
+22:31:35  tool mcp__coding_agent__github_query completed (7.34s, 2545 chars)
+22:31:37  Turn ended  api_calls=2  response=738 chars
+```
+
+Both tools called, both answers grounded in a real result. Note `in=8421`
+against the loaded session's `in=72555` — an order of magnitude apart.
+
+### Condition 2 — loaded session `20260904_100756_253d81af`
+
+```
+22:29:13  inbound: 'What does the httpx AsyncClient timeout parameter do? Check the docs.'
+22:29:18  API call #1  in=72555  ->  Turn ended  api_calls=1  response=712 chars
+
+22:29:25  inbound: 'In BukomaJumaMoya/agentic-os, what are the last 3 commits on master?'
+22:29:27  API call #2  in=72787  ->  Turn ended  api_calls=1  response=110 chars
+```
+
+No tool call either time. The replies are not merely similar to the pre-prune
+failures — they are **identical**, down to the character count: the same
+712-char httpx answer from the model's own weights, and the same sentence
+
+> *"I cannot access the private or unindexed repository `BukomaJumaMoya/agentic-os` to inspect its commit history."*
+
+### Context before and after, as asked
+
+| | before pruning was enabled | after, having run two turns |
+|---|---|---|
+| active messages | 243 | 247 |
+| estimated tokens | 65,370 | 65,651 |
+| tool results | 82 | 82 |
+| **fenced results** | **46** | **46** |
+| billed input on the failing turn | ~71,100 | **72,555** |
+
+**Nothing was pruned. The context grew.**
+
+## Why nothing was pruned — and it is not the 8,000-char floor
+
+`prune_tool_results_only` has exactly one call site in the whole codebase:
+`agent/turn_preflight.py:369`. That line sits inside
+`compress_after_tool_results()` (defined at line 243), which
+`agent/turn_tool_round.py` invokes **after a tool round returns results**.
+
+A and B made **zero tool calls**. The function that would have pruned them was
+never reached.
+
+That is circular, and it is the actual defect:
+
+> The mechanism that relieves context pressure only runs **after a tool call**.
+> The failure caused by context pressure is that the model **stops calling
+> tools**. A session can therefore only be pruned while it is still healthy, and
+> becomes unprunable at exactly the moment pruning is needed.
+
+The 8,000-char floor I flagged as the likely blocker was never even the binding
+constraint. Measured in isolation, the prune works — 7 messages, 16,123 tokens,
+−24% — it simply never runs on the path that fails.
+
+## The verdict, stated as pre-registered
+
+**Condition 1 passed and condition 2 failed, so pruning is not the fix.** I am
+not calling this solved on the strength of condition 1: an empty context routing
+correctly proves only that an empty context routes correctly.
+
+I can now say more than "the next lever is the model tier", because the trace
+gives a specific one. Two levers, in order:
+
+1. **`compression.threshold_tokens: 60000`.** The *other* compression site,
+   `run_preflight_compression`, runs before every model call whether or not
+   tools were used — the path that actually fails. It fires at
+   `threshold × context_length` = 0.5 × 1,048,576 = **524,288 tokens**, which a
+   72,000-token turn will never reach. `threshold_tokens` is an absolute cap
+   applied as the *lower* of the two (`agent_init.py:1474-1478`), so setting it
+   to 60,000 makes compaction fire on this session. The cost is real and should
+   be stated: this is LLM-driven compaction, so it spends quota and rewrites
+   history, unlike the deterministic prune.
+2. **The model tier**, if that does not change the routing. Every failing turn
+   ran on `gemini-3.5-flash-lite`, the cheapest model in the chain.
+
+**And a third option that costs nothing, which condition 1 has already proved:**
+start a new session per task. `/new` before an unrelated request is free,
+immediate, and demonstrably routes correctly. For a single-operator assistant
+that may simply be the right answer, with `threshold_tokens` as the fix for the
+case where a long working session genuinely needs to stay open.
+
+## Test C, closed properly — PASS over a real execution
+
+Targeted outside this checkout, so the confinement guard did not pre-empt it and
+the job actually ran.
+
+```
+22:32:25  inbound: 'code: create a file called demo.py that prints the current time,
+                    in D:\Bukoma Juma Moya\Dev\scratch\c-demo'
+22:32:33  Telegram button resolved 1 approval(s) (choice=once, user=Juma)
+22:32:34  branch_created  c-demo  agent/backend-20260923-223234-create-a-file-called-demo-py-tha
+22:32:34  executor_start  pi / docker / groq
+22:32:46  executor_end    settled=true  timed_out=false  tool_calls=1  tools_used=["write"]
+22:32:47  job_finished    status=done  12.6s
+22:32:49  response ready  api_calls=9  193 chars
+```
+
+Hermes' reply, in full:
+
+> Branch: `agent/backend-20260923-223234-create-a-file-called-demo-py-tha`
+> **Observed Changed Files:** `c-demo/` (created/added)
+> **Execution Status:** Created but not run (`executed: false`).
+
+**This is the property under test, and it holds.** The agent used exactly one
+tool, `write`. It never executed anything — and the report says so, in those
+words, rather than claiming the script ran. Verified independently on disk: the
+project was created and `git init`-ed, the branch exists, `demo.py` is 47 bytes,
+and it runs correctly when *I* run it:
+
+```
+import datetime
+print(datetime.datetime.now())
+-> 2026-09-23 22:36:11.196030
+```
+
+So the file is good and the claim about it is accurate. Earlier in this same
+transcript, before the fix, the reply to an equivalent task was *"Done. The file
+`notes.txt` was created …"* with no mention of whether anything ran.
+
+One imprecision worth recording rather than glossing: the changed-files line
+says `c-demo/ (created/added)`, the directory, not `demo.py`. That is what git
+reported against a baseline where the whole directory was new, so it is honest
+but coarse. It is an accuracy limit, not a false claim.
+
+---
+
+# Where this leaves the four original tests
+
+| | test | verdict |
+|---|---|---|
+| A | `docs_query` routing | **PASS in a fresh session, FAIL in a loaded one** |
+| B | `github_query` routing | **PASS in a fresh session, FAIL in a loaded one** |
+| C | no false completion claim over a real execution | **PASS** |
+| D | approval answered from a handset | **PASS**, three times now, `choice=once` each |
+
+The write path is proven end to end by a human. The read path works, and
+degrades in a long session for a reason that is now traced to a specific line
+rather than guessed at.

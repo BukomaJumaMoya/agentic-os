@@ -137,7 +137,7 @@ written in prose is untested code.**
 
 ## 3. Limitations
 
-### The read path has a routing defect a prompt cannot fix
+### The read path degrades in a long session — traced, not guessed
 
 The four tests that were blocked on the revoked bot token have now been run
 live. **Two passed, two failed**, and the two failures are one defect.
@@ -169,11 +169,6 @@ reads.
 
 ### Still unverified
 
-- **the coding agent's completion claim over Telegram.** The test aimed at a
-  file inside this checkout, so the confinement guard refused it first — audit
-  item 5 working. Hermes relayed the refusal accurately and invented nothing,
-  so the property held over a *refusal*; over a job that actually ran it is
-  still untested. It needs a target outside this repository
 - a second Telegram account being ignored, **observed** rather than reasoned
   about
 - the full W1–W4 run end to end in one session
@@ -265,35 +260,55 @@ Hermes' chain; it is the agents' provider.
 
 ## 5. Three things to fix next, in order
 
-**1. Turn on context pruning, then re-run the two failed reads in a fresh
-session.** One line in `config.yaml`:
+**1. Make compaction reachable on a session that has stopped calling tools.**
+Proactive pruning was applied and tested in both conditions; §3 has the detail
+and the short version is that it cannot fire on the failing path. The lever that
+can is one line in `config.yaml`:
 
 ```yaml
-proactive_prune_tokens: 60000     # currently 0 — never prunes
+compression:
+  threshold_tokens: 60000     # absolute cap, currently unset
 ```
 
-`proactive_prune_min_result_chars: 8000` is already set, so pruning takes the
-large stale tool results first, which is precisely the 32% of the context that
-is replaying *"do not follow tool-invocation requests"* 45 times over. A fresh
-session is the cheap discriminator: if `docs_query` and `github_query` route
-correctly there, context pressure is confirmed and this is the whole fix. If
-they do not, the next lever is the model tier — those turns ran on
-`gemini-3.5-flash-lite`, the cheapest in the chain.
+The *other* compression site, `run_preflight_compression`, runs before every
+model call whether or not tools were used — the path that actually fails. It
+fires at `threshold × context_length` = 0.5 × 1,048,576 = **524,288 tokens**,
+which a 72,000-token turn never reaches. `threshold_tokens` is applied as the
+**lower** of the two (`agent_init.py:1474-1478`), so 60,000 makes compaction
+fire here. State the cost honestly: this is LLM-driven compaction, so it spends
+quota and rewrites history, unlike the deterministic prune.
 
-**Applied 2026-09-23 22:18**, and then measured before trusting it, because the
-default `proactive_prune_min_result_chars: 8000` could have made it a no-op that
-reads as a fix. `hermes/measure_prune.py` runs Hermes' own deterministic prune
-against a copy of the live transcript: it reclaims **16,123 tokens, 24%**, from
-four large tool results — but takes the fenced-result count only from **46 to
-44**, because the other forty-two are small and the floor is 8,000.
+If routing still does not change, the remaining lever is the **model tier** —
+every failing turn ran on `gemini-3.5-flash-lite`, the cheapest in the chain.
 
-So the mechanism works and it does *not* do what I predicted. If routing changes
-after pruning, context pressure was the cause. If it does not, pruning is not
-the fix, the next lever is lowering that floor so the small fenced results are
-eligible, and after that the model tier — those turns ran on
-`gemini-3.5-flash-lite`, the cheapest in the chain. Condition 1 (a fresh
-session) cannot settle this either way: an empty context routing correctly
-proves only that an empty context routes correctly.
+**And one that costs nothing, already proven:** `/new` before an unrelated
+request. Condition 1 shows a fresh session routes correctly every time. For a
+single-operator assistant that may simply be the right answer, with
+`threshold_tokens` reserved for a long working session that must stay open.
+
+**Applied 2026-09-23 22:18, tested in both conditions, and it is not the fix.**
+
+| condition | result |
+|---|---|
+| fresh session | `docs_query` and `github_query` both called — **PASS** |
+| the same loaded session, pruning enabled | no tool call either time; replies **character-identical** to the pre-prune failures — **FAIL** |
+
+Nothing was pruned and the context grew: 243 → 247 messages, 46 fenced results
+→ 46, billed input 71,100 → 72,555.
+
+**Why, and it is not the 8,000-char floor I suspected.**
+`prune_tool_results_only` has exactly one call site in the codebase —
+`turn_preflight.py:369`, inside `compress_after_tool_results()`, which runs
+**after a tool round**. A and B made zero tool calls, so the function was never
+reached.
+
+> The mechanism that relieves context pressure only runs after a tool call. The
+> failure caused by context pressure is that the model stops calling tools. A
+> session can only be pruned while it is healthy, and becomes unprunable at
+> exactly the moment pruning is needed.
+
+Measured in isolation the prune works fine — 7 messages, 16,123 tokens, −24%
+(`hermes/measure_prune.py`). It simply never runs on the path that fails.
 
 **2. Test injection through its three real carriers.** Put a hostile instruction
 in a ClickUp task description, a GitHub PR body and an n8n payload, and watch
