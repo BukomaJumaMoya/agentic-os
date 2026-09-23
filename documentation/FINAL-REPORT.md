@@ -92,7 +92,7 @@ Full evidence for each is in `documentation/AUDIT-2.md`, section by number.
 | 7 | n8n | **PARTIAL** — boundary proven live; no live workflow behind it, by choice (§3) |
 | 8 | silent on empty runs | **PASS** — the `[SILENT]` token suppresses delivery, and the run is still audited locally |
 | 9 | a non-allowlisted Telegram user gets no reply | **PASS** — allow-list checked by SHA-256 on every start |
-| 10 | pinned versions | **PASS, one gap** — everything pinned by version or digest except the vendored Pi, which resolves `^0.86.1` from a fresh clone because its lockfile is gitignored |
+| 10 | pinned versions | **PASS** — the one gap is closed: the lockfile is committed, the sandbox builds from it with `npm ci`, and a clean clone produces a byte-identical dependency tree |
 | 11 | quota | **measured, and it binds** — see §4 |
 | 12 | a replayed approval | **PASS, by construction** — see below |
 | 13 | the rotation incident | **my defect, fixed** — see below |
@@ -170,10 +170,13 @@ behind that boundary is a stub.
 description, a GitHub PR body, an n8n payload. The fence is verified at the
 function level and against an injection pasted over Telegram.
 
-**One supply-chain pin is open.** `agents/coding/vendor/package-lock.json` is
-gitignored (predating this work), so from a fresh clone the vendored Pi resolves
-`^0.86.1` — any 0.86.x — and Context7's integrity hash is absent too. The
-sandbox is unaffected; its Dockerfile pins both exactly.
+**Supply-chain pinning — closed 2026-09-23, and it was worse than the earlier
+note said.** The lockfile was gitignored, so a fresh clone resolved any 0.86.x;
+and the sandbox, which I had recorded as unaffected because its Dockerfile names
+an exact version, was in fact resolving 250-odd transitive packages fresh on
+every build. Both now install with `npm ci` from one committed lockfile, and a
+build from a clean `git clone` produces the same 232-package tree, digest
+`8cc142200e1f2b5cba0d093e9b096255`, as a build from the working tree.
 
 **Guard condition 8 degrades honestly after a cache drop.** It compares Hermes'
 *computed* `readOnlyHint` against the manifest, which needs the MCP discovery
@@ -244,18 +247,16 @@ reads valid, restart, then: the three outstanding re-tests, and answer one
 approval card from the handset. That last one is the only part of the write path
 never exercised end to end by a human.
 
-**2. Commit `agents/coding/vendor/package-lock.json`.** It is one line removed
-from `.gitignore` and it closes the only open supply-chain pin — today a fresh
-clone of this repository can resolve a different Pi and a different Context7
-than the one audited. Small, boring, and the kind of gap that is only cheap to
-close before it matters.
-
-**3. Test injection through its three real carriers.** Put a hostile instruction
+**2. Test injection through its three real carriers.** Put a hostile instruction
 in a ClickUp task description, a GitHub PR body and an n8n payload, and watch
 what the model does with each. The fence is sound at the function level; what is
 untested is whether every path that carries third-party text actually routes
 through it. That is a coverage question, and coverage questions are answered by
 trying it, not by reading the code again.
+
+**3. Give the sandbox image its own pinned base digest.** `FROM` still names a
+tag. Everything installed *into* the image is now pinned exactly; the floor it
+is built on is not, which makes it the widest remaining gap by a distance.
 
 ---
 

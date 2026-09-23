@@ -514,27 +514,79 @@ actual second Telegram account — I have no other account to send from.
 
 ---
 
-## 10. Pinned versions — PASS, one gap
+## 10. Pinned versions — PASS (the one gap was closed 2026-09-23)
 
 | component | pinned to |
 |---|---|
 | Hermes Agent | `v0.21.3 (2026.9.14)`, upstream commit `a782e2ee7` |
 | github-mcp-server | `v1.12.2` **and image digest** `sha256:508a0857…cecac6` |
 | Context7 MCP | `4.1.1` exactly in `package.json` |
-| Pi (in sandbox) | `ARG PI_VERSION=0.86.1` — exact |
-| Pi (host vendor) | `^0.86.1` — **a caret range** |
+| Pi (in sandbox) | `npm ci` from the committed lockfile, version asserted `= 0.86.1` |
+| Pi (host vendor) | `npm ci` from that same lockfile |
 | RTK | `ARG RTK_VERSION=v0.49.0`, release tarball checksum-verified at build |
 | Ponytail | `ARG PONYTAIL_COMMIT=e3ba2aa6f1e6f0bc4d69eb09c9f0d0a93af56156` |
 | n8n | `n8nio/n8n:2.41.0`, digest `sha256:7217b80f0dd0…` |
 | sandbox image | `juma-pi-sandbox:2` |
 | fpdf2 | `fpdf2==2.8.8` |
 
-**The gap:** `agents/coding/vendor/package-lock.json` is gitignored
-(`.gitignore:47`, predating this work), so from a fresh clone the vendored Pi
-resolves `^0.86.1` — any 0.86.x — and Context7's integrity hash is not in the
-repository either. The sandbox is unaffected: its Dockerfile pins both exactly.
-Committing that lockfile would close it, and it is a deliberate one-line change
-rather than something to do as a side effect.
+### The gap, and how it was worse than it looked
+
+`agents/coding/vendor/package-lock.json` was gitignored (`.gitignore:47`,
+predating this work), so from a fresh clone the vendored Pi resolved `^0.86.1` —
+any 0.86.x — and Context7's integrity hash was not in the repository either.
+
+I recorded at the time that "the sandbox is unaffected: its Dockerfile pins both
+exactly." **That was wrong, and it is worth recording as wrong.** The Dockerfile
+ran
+
+```dockerfile
+RUN npm install -g "@earendil-works/pi-coding-agent@${PI_VERSION}"
+```
+
+which pins the top-level version and *nothing else*: npm resolved 250-odd
+transitive packages fresh on every build. Two builds of the same Dockerfile a
+week apart were two different images, under a comment claiming the image matched
+the host vendor directory. An exact top-level pin reads like reproducibility and
+is not — which is exactly the kind of claim this audit exists to check, and I
+took it at face value because the version number was right there.
+
+### Closed, and confirmed from a clean clone
+
+- the lockfile is committed: **252 entries, 246 carrying a `sha512` integrity
+  hash**. The five without are `@earendil-works/*` 0.86.1 — Pi's own
+  sub-packages — pinned by exact version and exact `resolved` URL, which is what
+  the registry publishes for them. That residue is upstream's, and it is far
+  narrower than "any 0.86.x"
+- the Dockerfile copies the **same** package.json and package-lock.json and runs
+  `npm ci`, which fails outright when the two disagree rather than quietly
+  resolving something nobody audited
+- it then asserts the installed Pi version equals `PI_VERSION`, because that ARG
+  also feeds `JUMA_SANDBOX_PI`, which the coding agent reports as the version it
+  ran under. A drifting lockfile would turn that report into a lie
+- a `.dockerignore` was added. The build context is `agents/coding/`, which
+  holds the coding agent's `.env` and a Windows-built `node_modules`; neither
+  belonged in a Linux image, and with the Dockerfile now copying from `vendor/`
+  that became a correctness problem rather than untidiness
+
+**Confirmed, not assumed.** The repository was cloned fresh into a temporary
+directory — the clone's `vendor/` contains exactly `package.json` and
+`package-lock.json`, no `node_modules` and no `.env` — and the sandbox was built
+from that clone. Comparing the *installed trees* of the two images, rather than
+their image digests, which differ by timestamp:
+
+| image | installed packages | tree digest |
+|---|---|---|
+| built from the working tree | 232 | `8cc142200e1f2b5cba0d093e9b096255` |
+| built from a clean `git clone` | 232 | `8cc142200e1f2b5cba0d093e9b096255` |
+
+232 rather than the lockfile's 252 because the platform-specific optional
+dependencies (`@esbuild/darwin-*`, `win32-*` and friends) are skipped on
+linux/amd64. That is npm behaving correctly, and it is the same 232 both times.
+
+One consequence worth stating rather than hiding: the sandbox image now also
+carries `@upstash/context7-mcp`, because it is in the shared lockfile. Nothing
+in the container runs it. One lockfile that both consumers install from is worth
+more than a second lockfile kept in step by hand.
 
 ---
 
