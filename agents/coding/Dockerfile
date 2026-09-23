@@ -75,11 +75,33 @@ RUN set -eux; \
 ENV RTK_TELEMETRY_DISABLED=1
 
 # ---------------------------------------------------------------------------
-# Pi, pinned to the same version the host vendor directory holds.
+# Pi, installed from the SAME lockfile the host vendor directory uses.
+#
+# This was `npm install -g @earendil-works/pi-coding-agent@${PI_VERSION}`, and
+# the comment above it claimed the image was "pinned to the same version the
+# host vendor directory holds". It pinned the top-level version and nothing
+# else: npm resolved 250-odd transitive packages fresh on every build, so two
+# builds of this same Dockerfile a week apart were two different images.
+#
+# Copying package-lock.json in and running `npm ci` makes the claim true. `ci`
+# fails outright when the lockfile and package.json disagree, which is the
+# behaviour worth having here -- a mismatch should stop the build rather than
+# be quietly resolved into something nobody audited.
+#
+# The version check afterwards is not belt-and-braces. PI_VERSION also feeds
+# JUMA_SANDBOX_PI, which the coding agent reports as the version it ran under.
+# If the lockfile moves and this ARG does not, that report becomes a lie.
 # ---------------------------------------------------------------------------
 ARG PI_VERSION=0.86.1
-RUN npm install -g "@earendil-works/pi-coding-agent@${PI_VERSION}" \
-    && npm cache clean --force
+COPY vendor/package.json vendor/package-lock.json /opt/pi/
+RUN cd /opt/pi \
+    && npm ci \
+    && installed="$(node -p "require('/opt/pi/node_modules/@earendil-works/pi-coding-agent/package.json').version")" \
+    && { [ "$installed" = "${PI_VERSION}" ] \
+         || { echo "lockfile has Pi $installed, PI_VERSION says ${PI_VERSION}"; exit 1; }; } \
+    && ln -s /opt/pi/node_modules/.bin/pi /usr/local/bin/pi \
+    && npm cache clean --force \
+    && pi --version
 
 # A non-root user, so files Pi creates in the mounted project are owned by a
 # normal uid rather than by root. Root-owned files in a repo on a bind mount

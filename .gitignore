@@ -41,10 +41,14 @@ agents/.venv/
 agents/*/.env
 
 # The Pi coding agent, installed locally by the coding agent's vendor/package.json.
-# 144 packages of third-party JS; reinstall with:
-#   cd agents/coding/vendor && npm install
+# 252 packages of third-party JS; reinstall with:
+#   cd agents/coding/vendor && npm ci
+#
+# package-lock.json is COMMITTED, deliberately. package.json asks for
+# "^0.86.1", so without the lockfile a fresh clone resolves any 0.86.x -- a
+# different tree from the one that was audited, and the sandbox image builds
+# from this same lockfile. `npm ci` then means one exact tree everywhere.
 agents/coding/vendor/node_modules/
-agents/coding/vendor/package-lock.json
 agents/coding/vendor/.env-mask-empty
 agents/docs/output/
 

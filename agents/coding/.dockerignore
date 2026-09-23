@@ -1,0 +1,10 @@
+# The build context is agents/coding/. Two things must never enter the image:
+#
+#   .env         the coding agent's credentials. The sandbox gets nothing.
+#   node_modules the host's install, ~200 MB, and platform-specific binaries
+#                built for Windows. The image runs `npm ci` from the lockfile
+#                instead, so shipping this would be both slow and wrong.
+.env
+vendor/node_modules/
+vendor/.env-mask-empty
+__pycache__/

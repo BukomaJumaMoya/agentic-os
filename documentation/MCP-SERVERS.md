@@ -99,16 +99,23 @@ earlier the same day.
 `npm install` resolves that version and no other. The installed tree also has
 the integrity hash `sha512-fUARTIZ…C5pA==`.
 
-**The caveat is that `agents/coding/vendor/package-lock.json` is gitignored**
-(`.gitignore:47`, a pre-existing decision that predates this work and also
-covers Pi). So a fresh clone is pinned by *version*, not by *hash*: it will
-fetch 4.1.1, but nothing in the repository proves the tarball is byte-identical
-to the one running here. That is weaker than the GitHub server, which is pinned
-by image digest.
+**This was weaker than it looked until 2026-09-23.** `package-lock.json` was
+gitignored, so a fresh clone was pinned by *version*, not by *hash*: it would
+fetch 4.1.1, but nothing in the repository proved the tarball was byte-identical
+to the one running here — and Pi, asked for as `^0.86.1`, was not even pinned by
+version.
 
-Committing the lockfile would close it. It is left alone here because changing
-what is and is not tracked in `vendor/` affects Pi as well, and that is a
-decision to take deliberately rather than as a side effect of adding Context7.
+**The lockfile is now committed**, and `npm ci` installs from it, so a fresh
+clone resolves one exact tree: 252 packages, 246 of them carrying a `sha512`
+integrity hash, including this one. The sandbox image builds from the *same*
+lockfile rather than `npm install -g`, so host and container agree by
+construction instead of by a comment saying they do.
+
+The five packages with no integrity hash are all `@earendil-works/*` 0.86.1 —
+Pi's own sub-packages. They are pinned to an exact version and an exact
+`resolved` URL, which is what npm recorded for them; the registry does not
+publish hashes this lockfile can carry. That is the remaining gap, it is
+upstream's to close, and it is narrower than "any 0.86.x".
 
 ## Context7: the rename that broke the first run
 

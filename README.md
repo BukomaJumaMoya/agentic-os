@@ -281,8 +281,8 @@ archive/pre-hermes/ the previous enquiry/proposal pipeline and its tests
 ```bash
 python -m venv agents/.venv
 agents/.venv/Scripts/pip install -r requirements.txt
-docker build -t juma-pi-sandbox:1 agents/coding      # sandbox for the coding agent
-(cd agents/coding/vendor && npm install)              # the Pi coding agent
+docker build -t juma-pi-sandbox:2 agents/coding      # sandbox for the coding agent
+(cd agents/coding/vendor && npm ci)                   # the Pi coding agent, from the lockfile
 
 python hermes/post_update.py                 # everything below, then proves it
 ```
