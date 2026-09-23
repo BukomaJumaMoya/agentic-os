@@ -158,9 +158,10 @@ client** — the docs agent has no SMTP, no ClickUp token and no bot token.
 
 ```bash
 python hermes/post_update.py         # after every hermes update — 9 steps, all must PASS
-python hermes/check_keys.py          # every credential, by name and verdict
-python hermes/verify_agents.py       # all six agents boot and match the manifest
-python hermes/redact_docs.py --check # nothing leaked into documentation/
+python hermes/check_keys.py              # every credential, by name and verdict
+python hermes/scan_stale_credentials.py  # credential copies nothing is tracking
+python hermes/verify_agents.py           # all six agents boot and match the manifest
+python hermes/redact_docs.py --check     # nothing leaked into documentation/
 ```
 
 Day-to-day operation, quota management, key rotation and what to do when the

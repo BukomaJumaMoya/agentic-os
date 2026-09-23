@@ -308,7 +308,17 @@ reached.
 > exactly the moment pruning is needed.
 
 Measured in isolation the prune works fine — 7 messages, 16,123 tokens, −24%
-(`hermes/measure_prune.py`). It simply never runs on the path that fails.
+(`hermes/measure_prune.py`). It simply never runs on the path that fails. Filed
+as `documentation/upstream-issue-prune-deadlock.md`.
+
+**Decided:** `compression.threshold_tokens` stays unset — it would reach the
+failing path but spends quota that is already the binding constraint and
+rewrites the transcript the next investigation needs. `/new` between tasks is
+the habit instead, recorded in the runbook as a rule with its reason.
+`proactive_prune_tokens` stays at 60000: it is free where it runs (deterministic,
+no provider call), non-destructive (`archive_and_compact()` soft-archives the
+replaced rows, still searchable), and reclaims 24% on a session that is still
+calling tools.
 
 **2. Test injection through its three real carriers.** Put a hostile instruction
 in a ClickUp task description, a GitHub PR body and an n8n payload, and watch

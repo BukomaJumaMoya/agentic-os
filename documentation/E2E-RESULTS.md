@@ -981,3 +981,44 @@ but coarse. It is an accuracy limit, not a false claim.
 The write path is proven end to end by a human. The read path works, and
 degrades in a long session for a reason that is now traced to a specific line
 rather than guessed at.
+
+---
+
+## Decisions taken on the strength of this run — 2026-09-23
+
+**`compression.threshold_tokens` stays unset.** It would reach the failing path,
+but it triggers LLM compaction: it spends provider quota that is already the
+binding constraint, and it rewrites the transcript that the next investigation
+would need. Declined deliberately, not overlooked.
+
+**`/new` is the habit instead**, recorded in `RUNBOOK.md` as an operating rule
+with its reason rather than as an instruction. One job per session.
+
+**`proactive_prune_tokens` stays at 60000 rather than reverting to 0.** It is
+unreachable on the failing path, so leaving it costs nothing there; the question
+is whether it is harmful where it *does* run, which is a session still calling
+tools. It is not, on three counts:
+
+- it is **deterministic and LLM-free**, so it spends no provider quota — the one
+  constraint that ruled out `threshold_tokens`
+- it is **non-destructive**. `archive_and_compact()` soft-archives the replaced
+  rows (`active=0, compacted=1`, "summarized away, still searchable"), so the
+  original tool results stay in `state.db` for exactly the debugging this
+  decision was made to protect. The prune changes what the *model* sees, not
+  what the record holds
+- where it runs it reclaims **16,123 tokens, −24%**, on the session measured,
+  which delays the degradation above rather than causing it
+
+Its real cost is one prompt-cache break per fire, and Hermes already gates that
+to be episodic (`proactive_prune_min_reclaim_tokens` plus a full regrowth
+runway before re-arming). Reverting it would remove a free benefit to avoid a
+problem it does not have.
+
+**Stale credentials swept.** Nine files outside the repository held live-shaped
+credentials, every one rotated out: five 2026-09-08 configs, a "known good"
+config, a 27 KB pre-rebuild `.env`, its `config.yaml`, and a `.curator_backups`
+blob with four ClickUp tokens. Confirmed dead by digest comparison against the
+credentials in use — no value printed — then deleted. The three kept
+`config.yaml.bak-*` files came back **clean**, which is the bot-token-out-of-
+`config.yaml` change proving itself. `archive/pre-hermes/` was clean.
+`hermes/scan_stale_credentials.py` makes the sweep repeatable.

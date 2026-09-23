@@ -33,6 +33,36 @@ Scheduled, unattended:
 | W3 weekly review | 08:00 Monday | completed, slipped, stale PRs; silent if nothing |
 | n8n notice drain | every minute | delivers queued n8n notices; silent when the queue is empty |
 
+### One job per session — send `/new` between tasks
+
+This is the one operating habit that matters, and it is a rule rather than a
+preference because the failure it avoids is silent.
+
+**Send `/new` when you move to an unrelated task.**
+
+Past roughly 70,000 tokens of history, the router stops calling tools. It does
+not error and it does not say so: it answers a documentation question from the
+model's own memory instead of reading the docs, and it declines a repository
+question with *"I cannot access the private or unindexed repository"* while
+holding a working `github_query` and a valid token. Both replies look fine.
+
+Measured on 2026-09-23, the same two questions in two sessions minutes apart:
+
+| | fresh session | loaded session (~72k tokens) |
+|---|---|---|
+| `docs_query` | **called** | not called |
+| `github_query` | **called** | not called |
+| input tokens | 8,421 | 72,555 |
+
+**And the session cannot recover by itself.** Hermes' context pruning only runs
+*after* a tool call (`turn_preflight.py:369`), so a session whose symptom is
+"stopped calling tools" can never be pruned — see
+`documentation/upstream-issue-prune-deadlock.md`. Every further message makes it
+worse. `/new` is the only free exit.
+
+Nothing is lost: past sessions stay searchable, and `session_search` reaches
+them.
+
 ### The two prefixes
 
 `proposal:` → research + `pm_query` for context → `draft_proposal` → you get the
@@ -281,12 +311,30 @@ is right.
 ## 9. Routine checks
 
 ```bash
-python hermes/check_keys.py                  # credentials still alive
-python hermes/verify_agents.py               # all six agents boot and match the manifest
-python hermes/redact_docs.py --check         # nothing leaked into documentation/
-python hermes/gateway_launcher.py --check    # the guard, without starting anything
-hermes cron list                             # jobs, schedules, last run
+python hermes/check_keys.py                     # credentials still alive
+python hermes/scan_stale_credentials.py         # credential copies nobody is managing
+python hermes/verify_agents.py                  # all six agents boot and match the manifest
+python hermes/redact_docs.py --check            # nothing leaked into documentation/
+python hermes/gateway_launcher.py --check       # the guard, without starting anything
+hermes cron list                                # jobs, schedules, last run
 ```
+
+`scan_stale_credentials.py` asks the question `check_keys.py` cannot: **what
+credentials exist on this disk that nothing is tracking?** Rotation only helps
+for copies you know about, and every tool that edits a config takes a backup
+first. It matched nine such files on 2026-09-23 — five 2026-09-08 configs, a
+"known good" config, a 27 KB pre-rebuild `.env`, its `config.yaml`, and a
+curator blob holding four ClickUp tokens — every one of them a rotated-out
+value, none of them covered by the approval patch. `--delete-stale` removes only
+files whose every match is already dead; anything still live is named, never
+swept.
+
+It reports **names, lengths and digests, never values**, and it self-checks:
+if a key in a managed `.env` looks like a credential and matches no pattern, it
+says so, because an unrecognised shape reads exactly like a clean disk. That
+check found two of its own blind spots on first run. `--self-test` plants a
+credential-shaped string that was never issued and requires the sweep to find
+it.
 
 `verify_agents.py` asks the **agents**, where the guard asks Hermes. It spawns
 each server over stdio exactly as Hermes does and compares what the process
