@@ -8,7 +8,18 @@ should not be trusted. Many of those documents assert that work is complete,
 verified, or passing — "29/29 items complete", "VERIFIED", "Status: PASS" — and
 those claims are contradicted by facts since checked directly.
 
-**Continuous integration has never passed.** Not once. The Actions history at
+**Continuous integration passes as of 2026-09-23** — run 35826159192, both
+`quality` and `smoke` green. It had never passed before that, on any commit,
+for four separate reasons that were fixed together: the credential scanner
+flagged the redaction test's own synthetic vectors; every test hardcoded the
+Windows venv path; the agents refused to start because `.env` files are
+gitignored and CI had none; and the confinement tests encoded Windows path
+literals that are meaningless on Linux. See `documentation/AUDIT-2.md`.
+
+The paragraph below describes the situation up to that date and is kept
+because the archived reports it refers to still cite CI as evidence.
+
+**Continuous integration had never passed.** Not once. The Actions history at
 https://github.com/BukomaJumaMoya/agentic-os/actions shows every workflow run
 ending in failure. The `quality` workflow fails on its first step, so every
 test step after it — approval-boundary, flagship, integration — has been
