@@ -47,3 +47,7 @@ agents/coding/vendor/node_modules/
 agents/coding/vendor/package-lock.json
 agents/coding/vendor/.env-mask-empty
 agents/docs/output/
+
+# The n8n receiver appends every accepted webhook here. It is runtime state,
+# not source, and it carries whatever a workflow sent -- keep it out of git.
+agents/n8n/queue.jsonl

@@ -234,13 +234,25 @@ def main() -> int:
             state, note = verdict(*validator(value))
             rows.append((label, name, len(value), state, note))
 
+    # Hermes' primary provider key used to live ONLY in a user environment
+    # variable. That was the bug behind a silent outage: a scheduled task does
+    # not inherit the interactive user's environment, so the gateway started
+    # with no key while `hermes` from a terminal worked fine. The authoritative
+    # copy is now `<hermes home>/.env`, which the gateway loads itself.
+    #
+    # So an environment copy is OPTIONAL. It is checked when present -- a stale
+    # one shadows the file for CLI use and the digest comparison below will say
+    # so -- and its absence is only a failure when the .env has none either.
+    in_env_file = "GEMINI_API_KEY" in seen and any(
+        label != "environment" for label in seen["GEMINI_API_KEY"])
     if extra:
-        # Hermes' primary provider key is a user environment variable, not a
-        # .env line -- the README says so -- so it would otherwise go unchecked.
         seen.setdefault("GEMINI_API_KEY", {})["environment"] = hashlib.sha256(
             extra.encode()).hexdigest()[:12]
         state, note = verdict(*check_gemini(extra))
         rows.append(("environment", "GEMINI_API_KEY", len(extra), state, note))
+    elif in_env_file:
+        rows.append(("environment", "GEMINI_API_KEY", 0, "-",
+                     "not set; the hermes .env copy is the one that counts"))
     else:
         rows.append(("environment", "GEMINI_API_KEY", 0, "INVALID",
                      "not set; Hermes' primary provider has no key"))

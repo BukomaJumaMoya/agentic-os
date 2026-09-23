@@ -39,6 +39,13 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+# Backups accumulate forever otherwise: 49 copies of config.yaml, every one
+# holding a plaintext bot token, none covered by the approval patch. Pruned at
+# the moment one is created, which is the only moment the count can grow.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from backup_prune import prune as _prune_backups  # noqa: E402
+
+
 REPO = Path(__file__).resolve().parent.parent
 AGENTS = REPO / "agents"
 PYTHON = AGENTS / ".venv" / "Scripts" / "python.exe"
@@ -297,6 +304,8 @@ def main() -> int:
         f"config.yaml.bak-juma-{datetime.now().strftime('%Y%m%d-%H%M%S')}")
     shutil.copy2(config, backup)
     print(f"backup: {backup.name}")
+    _prune_backups(config_path.parent if "config_path" in dir() else backup.parent,
+                   "config.yaml.bak-*")
 
     text, message = replace_telegram_toolsets(text)
     print(f"  {message}")

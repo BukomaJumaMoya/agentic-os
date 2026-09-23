@@ -204,11 +204,11 @@ def check_surface_in_manifest(names, manifest, platform=PLATFORM) -> tuple[bool,
 
 
 def check_approval_patch(target: Path | None = None) -> tuple[bool, str]:
-    """2. Reading ~/.hermes/.env still requires approval.
+    """2. Reading %LOCALAPPDATA%\hermes\.env still requires approval.
 
     `hermes update` stashes local changes to its own checkout, which is exactly
     how this patch disappeared once before -- silently, with the agent running
-    and `cat ~/.hermes/.env` back to a verdict of `allow`.
+    and `cat %LOCALAPPDATA%\hermes\.env` back to a verdict of `allow`.
     """
     path = target or (hermes_home() / "hermes-agent" / "tools" / "approval_detection.py")
     if not path.exists():

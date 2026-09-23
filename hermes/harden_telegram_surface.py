@@ -81,6 +81,13 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+# Backups accumulate forever otherwise: 49 copies of config.yaml, every one
+# holding a plaintext bot token, none covered by the approval patch. Pruned at
+# the moment one is created, which is the only moment the count can grow.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from backup_prune import prune as _prune_backups  # noqa: E402
+
+
 REPO = Path(__file__).resolve().parent.parent
 CHECKER = REPO / "hermes" / "check_telegram_surface.py"
 
@@ -180,6 +187,8 @@ def fix_config() -> list[str]:
         f"config.yaml.bak-surface-{datetime.now().strftime('%Y%m%d-%H%M%S')}")
     shutil.copy2(config_path, backup)
     print(f"backup: {backup.name}")
+    _prune_backups(config_path.parent if "config_path" in dir() else backup.parent,
+                   "config.yaml.bak-*")
 
     config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
     changes: list[str] = []
@@ -206,6 +215,29 @@ def fix_config() -> list[str]:
         changes.append(f"platform_toolsets.telegram -> {TELEGRAM_TOOLSETS}")
     else:
         print("  platform_toolsets.telegram already correct")
+
+    # 2b. The bot token does not belong in config.yaml.
+    #
+    # Hermes resolves TELEGRAM_BOT_TOKEN from the environment
+    # (gateway/config_env.py: _Cred(Platform.TELEGRAM, ("TELEGRAM_BOT_TOKEN",))),
+    # and the gateway already loads <home>/.env at startup. So the token can
+    # live in exactly one place instead of two.
+    #
+    # It mattered more than "tidier". Every script here copies config.yaml
+    # aside before editing, and nobody pruned: 49 backups had accumulated, all
+    # 49 holding the token in plaintext, none of them covered by the approval
+    # patch -- which matches config.yaml, .env, auth.json and mcp-tokens, not
+    # config.yaml.bak-20260921-110148. Rotating the token fixed one copy and
+    # left forty-nine. With the token out of config.yaml, a backup of it is no
+    # longer a copy of a secret.
+    #
+    # allow_list stays: it is an identifier, not a credential, and guard
+    # condition 4 checks it by digest on every start.
+    platforms = (config.setdefault("gateway", {})
+                 .setdefault("platforms", {}).setdefault("telegram", {}))
+    if platforms.pop("bot_token", None) is not None:
+        changes.append("gateway.platforms.telegram.bot_token removed "
+                       "(read from TELEGRAM_BOT_TOKEN in <home>/.env instead)")
 
     # 3. Stop deferring seven tools behind a three-tool bridge.
     tools_cfg = config.setdefault("tools", {})
@@ -238,6 +270,18 @@ def fix_config() -> list[str]:
         problems.append("tools.tool_search.enabled did not round-trip")
     if check.get("command_allowlist") != []:
         problems.append("command_allowlist is no longer empty")
+
+    telegram_cfg = (((check.get("gateway") or {}).get("platforms") or {})
+                    .get("telegram") or {})
+    if telegram_cfg.get("bot_token"):
+        problems.append("bot_token is still in config.yaml")
+    envfile = hermes_home() / ".env"
+    env_text = envfile.read_text(encoding="utf-8", errors="replace") if envfile.exists() else ""
+    if "TELEGRAM_BOT_TOKEN=" not in env_text:
+        # Removing it from config without it being in .env would take the bot
+        # off Telegram entirely. Refuse rather than do that silently.
+        problems.append(f"TELEGRAM_BOT_TOKEN is not in {envfile}; refusing to "
+                        f"leave the gateway with no token")
     if problems:
         raise SystemExit("FAIL: " + "; ".join(problems))
     return changes

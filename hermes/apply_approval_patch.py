@@ -8,7 +8,7 @@ updates.non_interactive_local_changes = stash. A hand edit to a tracked file is
 therefore not "applied" in any durable sense -- it is applied until the next
 update stashes it, silently, with the agent still running and the rule gone.
 That is exactly what happened to the previous patch: after the update the
-verdict for `cat ~/.hermes/.env` was `allow`, and nothing said so.
+verdict for `cat %LOCALAPPDATA%\hermes\.env` was `allow`, and nothing said so.
 
 So the patch lives here, in the repository that is actually backed up, and is
 re-applied by running this script. It is idempotent: it looks for its own
@@ -16,7 +16,7 @@ marker and does nothing if the rules are already present.
 
 WHAT IT ADDS
 ------------
-Upstream already treats a WRITE to ~/.hermes/.env as dangerous
+Upstream already treats a WRITE to %LOCALAPPDATA%\hermes\.env as dangerous
 (_HERMES_ENV_PATH feeds _SENSITIVE_WRITE_TARGET). A READ was not covered at
 all, and the read is the whole prize: every provider key, the Telegram bot
 token and the allow-list are in that one file.
@@ -55,7 +55,7 @@ ANCHOR_SUBSTRING = "end of Windows tier"
 
 RULES = r"""    # ---------------------------------------------------------------------
     # juma-rebuild: Hermes secret-store READ rules
-    # Upstream covers WRITES to ~/.hermes/.env via _SENSITIVE_WRITE_TARGET.
+    # Upstream covers WRITES to %LOCALAPPDATA%\hermes\.env via _SENSITIVE_WRITE_TARGET.
     # Reads were uncovered, and the read is the prize: provider keys, the
     # Telegram bot token and the allow-list all live in that one file.
     #
@@ -69,8 +69,8 @@ RULES = r"""    # --------------------------------------------------------------
     # legitimate; doing it silently is not.
     #
     # _normalize_command_for_detection() folds the resolved home into the
-    # ~/.hermes/ spelling, so the absolute Windows path, the forward-slash form
-    # and the tilde form all reach the matcher as ~/.hermes/.env.
+    # %LOCALAPPDATA%\hermes\ spelling, so the absolute Windows path, the forward-slash form
+    # and the tilde form all reach the matcher as %LOCALAPPDATA%\hermes\.env.
     (r'(?:~|\$home|\$\{home\})[\/]\.hermes[\/](?:\.env|auth\.json|mcp-tokens)',
      "read Hermes secret store"),
     (r'(?:\$hermes_home|\$\{hermes_home\}|%hermes_home%)[\/]*(?:\.env|auth\.json|mcp-tokens)',

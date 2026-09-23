@@ -25,6 +25,20 @@ code rather than asserted in a prompt.
      │                  ClickUp. Create and update only — the DELETE verb has
      │                  no code path at all.
      │
+     ├── stdio MCP ──▶  docs_agent       draft_proposal
+     │                  Proposal drafting + fpdf2 PDF. Identity, rates and
+     │                  signature come from config/juma.json IN CODE. No SMTP,
+     │                  no ClickUp, no bot token — it cannot reach a client.
+     │
+     ├── stdio MCP ──▶  n8n_agent        list_workflows · run_workflow
+     │                  Named workflows only, by webhook. The n8n ADMIN key is
+     │                  not declared in its bootstrap, so it is not in-process.
+     │
+     ├── stdio MCP ──▶  kola_agent       kola_catalogue · kola_query
+     │                  Kolaborate marketplace, read-only. Its `kola_call` names
+     │                  the operation in its ARGUMENTS, so the agent allowlists
+     │                  the INNER operation — no tool-name allowlist can.
+     │
      └── stdio MCP ──▶  coding_agent     start_code_task · get_status
                         · get_result · list_changed_files
                         · github_query · github_action · docs_query
@@ -252,7 +266,7 @@ agents/coding/      Pi coding agent, Docker-sandboxed
 hermes/             the Hermes-side configuration, kept in the repo because
                     `hermes update` stashes local changes to its checkout.
                     surface-manifest.json is the tool allowlist; SOUL.md is the
-                    tracked copy of ~/.hermes/SOUL.md; post_update.py runs the
+                    tracked copy of %LOCALAPPDATA%\hermes\SOUL.md; post_update.py runs the
                     rest and proves it
 tools/              logging_proxy.py — sits between Hermes and a provider and
                     records what is actually sent; --sink answers locally so a
@@ -315,7 +329,7 @@ Each agent needs its own `agents/<name>/.env` (gitignored). Key names only:
 
 Hermes itself needs `GEMINI_API_KEY` (its primary) and `OPENROUTER_API_KEY`
 (its fallback). `GEMINI_API_KEY` is read from the environment, so it does not
-have to be written into `~/.hermes/.env`.
+have to be written into `%LOCALAPPDATA%\hermes\.env`.
 
 ## The Telegram tool surface
 
@@ -466,10 +480,34 @@ The in-process guard **stays**. It is not redundant — it covers
 the launcher. The launcher covers the scheduled task, which is the only route
 that runs unattended.
 
+## Where the secrets live
+
+`%LOCALAPPDATA%\hermes\.env` — **not** `~/.hermes`, which is what several
+documents said until 2026-09-23. That wrong path had a consequence: a rotation
+updated all six agent `.env` files and missed Hermes' own, so the gateway came
+up with a revoked bot token and refused to connect.
+
+**The Telegram bot token is no longer in `config.yaml`.** Hermes resolves it
+from `TELEGRAM_BOT_TOKEN` in the environment
+(`gateway/config_env.py: _Cred(Platform.TELEGRAM, ("TELEGRAM_BOT_TOKEN",))`),
+and the gateway already loads that `.env` at startup, so one copy is enough.
+
+That mattered more than tidiness. Every script in `hermes/` copies
+`config.yaml` aside before editing and nobody pruned them: **49 backups had
+accumulated, all 49 holding the token in plaintext**, and none of them covered
+by the approval patch — which matches `config.yaml`, `.env`, `auth.json` and
+`mcp-tokens`, not `config.yaml.bak-20260921-110148`. Rotating the token fixed
+one copy and left forty-nine. `hermes/backup_prune.py` now keeps the newest
+three and runs at the moment a backup is written, and with the token out of
+`config.yaml` a backup of it is no longer a copy of a secret.
+
+`allow_list` stays in `config.yaml`: it is an identifier, not a credential, and
+guard condition 4 checks it by SHA-256 on every start.
+
 ## The approval patch
 
 `hermes/apply_approval_patch.py` makes reading Hermes' secret store require
-approval. Upstream covers *writes* to `~/.hermes/.env`; reads were uncovered,
+approval. Upstream covers *writes* to `%LOCALAPPDATA%\hermes\.env`; reads were uncovered,
 and the read is the whole prize — every provider key and the Telegram bot token
 live in that one file.
 
@@ -480,7 +518,7 @@ unbounded: `cat`, `type`, `more`, `head`, `tail`, `strings`, `xxd`, `grep`,
 
 Re-run it after every `hermes update`. Hermes is a git checkout and `update`
 stashes local changes, so the previous patch vanished silently — the verdict for
-`cat ~/.hermes/.env` was back to `allow` and nothing said so.
+`cat %LOCALAPPDATA%\hermes\.env` was back to `allow` and nothing said so.
 
 ## Tests
 
@@ -601,15 +639,24 @@ Full detail, including the GitHub and Context7 allowlists, is in
 
 ## Known open items
 
-Carried forward deliberately, with what each one needs.
+Carried forward deliberately, with what each one needs. Items that were open in
+earlier revisions and have since been closed are listed at the bottom, because
+a list that only ever grows stops being read.
 
 | item | needs |
 |---|---|
-| Scheduled task still restarts **999** times, not 3 | one elevated `Set-ScheduledTask`; the task's ACL denies a standard user, and `schtasks /create /xml /f` and `Register-ScheduledTask` are denied too |
-| Windows Event Log alerts are not written | one elevated `New-EventLog -LogName Application -Source Hermes_Gateway`; the launcher reports this rather than failing silently, and the Telegram and file channels work regardless |
-| T3b re-test outstanding | the SOUL rule against delegating non-coding shell/file requests is installed but has not been re-tested over a real Telegram message |
-| Telegram approval prompt unexercised | the write-approval gate is proven deterministic locally, but the prompt has not been answered from a phone. Code path is `_is_gateway_approval_context()` → `_await_gateway_decision`, the same round trip the dangerous-command gate already uses |
-| Kolaborate MCP not wired | needs a `kola_live_…` key minted from their dashboard. It is a hosted service with no public repo, no version to pin and no published licence — see `documentation/MCP-SERVERS.md` |
-| Disclosed identifiers are not rotated | the bot token and chat ID were published in this repository's history. Redaction stops new exposure; it does not undo the old one |
+| **`TELEGRAM_BOT_TOKEN` is rejected — the gateway cannot connect** | a fresh token from BotFather, pasted into `%LOCALAPPDATA%\hermes\.env`. Everything else in the chain is verified; this one value is revoked. Until it is replaced, no live Telegram test can run |
+| Three live Telegram re-tests outstanding | blocked on the line above. They are: the `docs_query` retry loop, `github_query` routing, and the coding agent's no-longer-false completion claim. All three fixes are verified locally and by test; none has been exercised over a real message |
+| Telegram approval prompt unexercised from a phone | the write-approval gate is proven deterministic under Hermes' own interpreter, and the elicitation patch is proven to offer only `['once','deny']`. The round trip to a handset has not been done |
+| n8n is wired but runs no live workflow | by choice. Driving a real workflow would mean putting a second copy of the ClickUp credential inside n8n, and one copy per credential is the rule that makes per-agent isolation mean anything. The HMAC boundary, the receiver and `run_workflow` are all tested; the workflow behind them is a stub |
+| Disclosed identifiers are not rotated | the bot token and chat ID were published in this repository's history. Redaction stops new exposure; it does not undo the old one. The token is being rotated anyway for the reason in row 1 |
 | `documentation/STATUS.md` records `external_action.py` still POSTing to a dead `/message/send` route | archived pre-Hermes code, unreachable from any production path; left as history rather than repaired |
-| CI has never passed | unchanged from `STATUS.md`; no automated check has ever validated this repository |
+
+### Closed since the last revision
+
+| was | now |
+|---|---|
+| Scheduled task restarted 999 times, not 3 | `RestartCount: 3`, `RestartInterval: PT1M` |
+| Windows Event Log alerts were not written | source `Hermes_Gateway` exists; 100 pass, 101 refusal |
+| Kolaborate MCP not wired | wired read-only behind `kola_agent`, returning real marketplace data, with the **inner** operation allowlisted |
+| CI had never passed | `quality` is green. Four separate causes, recorded in `documentation/STATUS.md` |

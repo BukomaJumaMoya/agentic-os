@@ -63,6 +63,13 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+# Backups accumulate forever otherwise: 49 copies of config.yaml, every one
+# holding a plaintext bot token, none covered by the approval patch. Pruned at
+# the moment one is created, which is the only moment the count can grow.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from backup_prune import prune as _prune_backups  # noqa: E402
+
+
 GEMINI_UPSTREAM = "https://generativelanguage.googleapis.com/v1beta/openai"
 PROXY_BASE = "http://127.0.0.1:8799/v1"
 # Any name but "gemini" -- see the module docstring.
@@ -159,6 +166,8 @@ def main() -> int:
         f"config.yaml.bak-gemini-{datetime.now().strftime('%Y%m%d-%H%M%S')}")
     shutil.copy2(config_path, backup)
     print(f"backup: {backup.name}")
+    _prune_backups(config_path.parent if "config_path" in dir() else backup.parent,
+                   "config.yaml.bak-*")
 
     config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
 

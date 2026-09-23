@@ -6,7 +6,7 @@ WHY IT HAS TO EXIST
 Hermes is installed as a git checkout, and `hermes update` pulls into it with
 `updates.non_interactive_local_changes: stash`. Every local change to that
 checkout is therefore temporary by default. This has already happened once, to
-the approval patch: after an update the verdict for `cat ~/.hermes/.env` was
+the approval patch: after an update the verdict for `cat %LOCALAPPDATA%\hermes\.env` was
 back to `allow`, the agent kept running, and nothing anywhere said so.
 
 Two of the five invariants live inside that checkout -- the approval patch and

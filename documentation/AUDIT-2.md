@@ -476,7 +476,7 @@ would be inventing a result.
 ## 8. Silent on empty runs — PASS
 
 Hermes' native `[SILENT]` token suppresses delivery while still writing the run
-to `~/.hermes/cron/output/`. Tested with a job whose prompt guaranteed nothing
+to `%LOCALAPPDATA%\hermes\cron/output/`. Tested with a job whose prompt guaranteed nothing
 to report:
 
 | | silent run | briefing with real content |
@@ -506,7 +506,7 @@ if decision is None:
     return _scoped_gate_env("GATEWAY_ALLOW_ALL_USERS").lower() in {"true","1","yes"}
 ```
 
-`GATEWAY_ALLOW_ALL_USERS` is **commented out** in `~/.hermes/.env` and absent
+`GATEWAY_ALLOW_ALL_USERS` is **commented out** in `%LOCALAPPDATA%\hermes\.env` and absent
 from the user environment, so the escape hatch is shut.
 
 Verified via config and code path, as the brief asked. Not verified by an
@@ -624,12 +624,194 @@ token-cost argument I made first and withdrew.
 Their `/api/health` still reports `ok: true` while auth is down, because it
 only checks that a Convex URL is configured. It is not a liveness signal.
 
+## 12. A replayed approval — answered, and it is structural
+
+The question put to me was: if a `/approve` is replayed, is it refused? If not,
+that is a defect to fix before anything else.
+
+**It is refused, and not by a check somebody remembered to add.** There is no
+durable approval token to replay. Hermes' gate is per-*call*: the tool call
+blocks inside `_await_gateway_decision`, which appends an entry to
+`_gateway_queues[session]` and waits on that entry's event.
+`resolve_gateway_approval()` pops the entry out of the queue **in the same
+critical section** in which it commits the choice. The approval and the call it
+authorises are the same object, so answering consumes it.
+
+Run against Hermes' own queue under Hermes' own interpreter — no model, no
+Telegram, no mocking of the thing under test
+(`hermes/prove_replay_refused.py`):
+
+| sent | resolved |
+|---|---|
+| `/approve` for `req-1`, once pending | **1** |
+| the same `/approve` for `req-1`, replayed | **0** |
+| a bare `/approve`, replayed | **0** |
+| queue afterwards | `None` |
+| `entry.result` | `'once'` — consumed exactly once |
+
+`resolve_gateway_approval` returning 0 is not a silent drop: the gateway tells
+the client nothing was pending, rather than acking "ok" while no tool runs.
+
+**Where the real replay risk was, and it was not the message.** It was
+"Always Allow". Hermes' renderer defaults `allow_permanent` and `allow_session`
+to `True`, which stores a decision that *outlives the call* — approve one
+`pm_action` and every later `pm_action` goes through unasked, which is a replay
+the operator performs on themselves. That is what
+`hermes/patch_elicitation_percall.py` removes: MCP elicitation now offers
+`['once','deny']` and nothing else, while the dangerous-command gate keeps all
+four options, because there the pattern-key *is* the scope.
+
+So the honest verdict has two halves. **Replay of a message — PASS, by
+construction. Replay via a stored decision — was open by default, now closed by
+patch**, with guard condition 7 and `post_update.py` step 6 re-proving the patch
+is still present after every Hermes update.
+
+## 13. The rotation incident — the wrong path was in my own checklist
+
+Recorded because it is the most instructive failure in this build, and because
+it was mine.
+
+The key-rotation checklist I wrote said `~/.hermes/.env`. Hermes' home on this
+machine is `%LOCALAPPDATA%\hermes`. The operator rotated every credential
+correctly, following that checklist: all six agent `.env` files were updated,
+and Hermes' own was not, because the path in the instructions did not exist.
+
+**Consequence.** The gateway started with a revoked `TELEGRAM_BOT_TOKEN` and
+Telegram went silent. Nothing failed loudly. The startup guard passed — all
+eight conditions are about *shape*, not about whether a credential still
+authenticates, and it is right that they are: a guard that made network calls
+would fail closed during an outage it did not cause.
+
+**What actually caught it.** `hermes/check_keys.py`, in one command: it reads
+the real path, makes one authenticated call per credential, and printed
+
+```
+hermes  TELEGRAM_BOT_TOKEN  46  INVALID  (rejected (HTTP 401))
+```
+
+**Three fixes, in the order they matter.**
+
+1. The path is corrected in the checklist, `RUNBOOK.md`, `README.md`,
+   `check_telegram_surface.py`, `post_update.py` and `apply_approval_patch.py`.
+   Verified by reading every `hermes_home()` helper: all four resolve to
+   `C:\Users\HP\AppData\Local\hermes`, so **no code ever assumed `~/.hermes`** —
+   the wrong path existed only in prose, which is exactly why nothing caught it.
+2. `check_keys.py` is now a step *in* the rotation procedure rather than a thing
+   you might run afterwards. A rotation is not finished when the values are
+   pasted; it is finished when every key comes back valid.
+3. The same class of bug turned up once more in the same pass: `GEMINI_API_KEY`
+   had lived *only* in a User environment variable. A scheduled task does not
+   inherit the interactive user's environment, so the gateway had no key while
+   `hermes` in a terminal worked perfectly. The file copy is authoritative now,
+   and an environment copy is optional and reported as such.
+
+The generalisable lesson is narrow and worth keeping: **a credential path
+written in prose is untested code.** Nothing in this repository dereferences
+`~/.hermes`, so no test could have failed; the only thing that executes that
+path is a human following instructions.
+
+## 14. Leftovers in the Hermes home — assessed, not assumed
+
+Six things were sitting in `%LOCALAPPDATA%\hermes`. Each was opened and read
+before anything was deleted.
+
+| file | what it is | credential? | disposition |
+|---|---|---|---|
+| `openclaw_test_token.txt` | — | — | already absent; nothing to assess |
+| `generate_token.py` | scratch: printed a random hex string | no value, no write | **deleted** |
+| `token_gen.py` | near-duplicate of the above | no value, no write | **deleted** |
+| `tmp_token.py` | the same again, a third time | no value, no write | **deleted** |
+| `router_proof.js` | a few lines probing the pre-Hermes local router | no value, no write | **deleted** |
+| `config.yaml.bak-*` | **49 files, 377 KB** | **49 of 49 contained the live-shaped bot token** | pruned to the newest 3 |
+
+The four scripts were dead scratch: no credential in them and no credential
+written by them. The backups were the actual finding.
+
+**Why forty-nine plaintext copies of a token is worse than one.** Every script
+in `hermes/` copies `config.yaml` aside before editing it — the right instinct,
+never cleaned up. None of those copies is covered by the approval patch, which
+matches `config.yaml`, `.env`, `auth.json` and `mcp-tokens`, **not**
+`config.yaml.bak-20260921-110148`. So rotating the token fixed the live file and
+left forty-nine stale secrets that the gate would hand over without asking.
+
+Two changes, because pruning alone would only defer it:
+
+- `hermes/backup_prune.py` keeps the newest three and is called **at the moment
+  a backup is written**, by `configure_gemini.py`, `configure_orchestrator.py`
+  and `harden_telegram_surface.py`. The pile is bounded where it would grow, not
+  by a sweep somebody has to remember.
+- The token is no longer in `config.yaml` at all — see below — so a backup of
+  that file is no longer a copy of a secret.
+
+`allow_list` stays in `config.yaml` deliberately: it is an identifier, not a
+credential, and guard condition 4 verifies it by SHA-256 on every start.
+
+## 15. The bot token is out of `config.yaml` — Hermes does support it
+
+Asked plainly: **yes, it supports it.** Hermes reads the Telegram token from the
+environment, in `gateway/config_env.py`:
+
+```python
+_Cred(Platform.TELEGRAM, ("TELEGRAM_BOT_TOKEN",), token="TELEGRAM_BOT_TOKEN")
+```
+
+and the gateway loads `<hermes home>/.env` itself at startup, so one copy in
+that file is enough. `harden_telegram_surface.py` now removes
+`gateway.platforms.telegram.bot_token` from `config.yaml`, and it is
+**fail-closed**: it refuses to remove the key unless `TELEGRAM_BOT_TOKEN` is
+already present in the `.env`, so the hardening step cannot itself be what takes
+Telegram down.
+
+Proven by restart: the gateway started, resolved the token from the environment
+with no `bot_token` in the config file, and reached Telegram's API. Telegram
+then rejected the *value*: `the token <redacted>:*** was rejected by the
+server ... invalid or was revoked`. (The bot ID is the numeric prefix of the
+token, so it is redacted here too — `redact_docs.py --check` caught this exact
+line in the draft of this paragraph, which is the layer working.) That is the
+rotation incident above, not the mechanism. **The mechanism works; the value in it is revoked.**
+
+## 16. The HMAC boundary, re-tested against the rotated secret
+
+`N8N_WEBHOOK_SECRET` was rotated. The receiver reads it at startup, so the thing
+worth testing is whether the *running container* picked up the new value —
+re-run from inside the `hermes-n8n` Docker network, since the receiver publishes
+no port to the host at all.
+
+| request | signature | result |
+|---|---|---|
+| valid body, signed with the **new** secret | correct | **200**, one line appended to the queue |
+| valid body, no signature header | — | **401** |
+| valid body, arbitrary signature | wrong | **401** |
+| valid body, signed with the **old** secret | correct-for-old | **401** |
+| body tampered after signing | stale | **401** |
+| 20 signed requests in a burst | correct | **429** past the window limit |
+
+Only the first request appears in `agents/n8n/queue.jsonl`. The old-secret row
+is the one that answers the question asked: the container is enforcing the
+rotated value, not a cached one.
+
 ## What is still unverified
 
-Stated separately so nothing above borrows confidence from it:
+Stated separately so nothing above borrows confidence from it. This list is
+shorter than it was; the items that left it did so by being tested, and the ones
+that remain nearly all share one cause.
 
-- the full W1–W4 Telegram run, including one `/reject` and one replayed approve
-- the approval prompt rendering and being answered on a phone
-- injection through a ClickUp description, a GitHub PR body, or n8n
-- anything n8n beyond "it is running and only on localhost"
+**Blocked on a credential, not on design.** `TELEGRAM_BOT_TOKEN` is revoked and
+the gateway cannot connect until a fresh one from BotFather is in
+`%LOCALAPPDATA%\hermes\.env`. Everything here needs a live Telegram round trip:
+
+- the three re-tests — the `docs_query` retry loop, `github_query` routing, and
+  the coding agent's completion claim. All three fixes are verified locally and
+  covered by tests; none has been exercised over a real message
+- the approval card rendering and being answered on a handset. The gate itself
+  is proven deterministic under Hermes' interpreter, and the elicitation patch is
+  proven to offer only `['once','deny']`
 - a second Telegram account being ignored, observed rather than reasoned about
+
+**Not blocked, simply not done.**
+
+- injection through a ClickUp task description, a GitHub PR body, or an n8n
+  payload. Fencing is verified at the function level and against an injection
+  pasted over Telegram; it is not verified through those three carriers
+- n8n beyond the boundary: the HMAC edge and `run_workflow` are tested, but no
+  live workflow runs behind them, by the decision recorded in the README

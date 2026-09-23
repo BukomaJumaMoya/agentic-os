@@ -40,8 +40,20 @@ file-write and command-execution paths.
 
 ## Current source of truth
 
-`AUDIT-agentic-os.md`, beside this file, supersedes everything in
-`documentation/archive/`. Where the two disagree, the audit is correct.
+In this order, most current first. Where any two disagree, the higher one wins.
+
+| document | what it is for |
+|---|---|
+| `../README.md` | the architecture as built, and the open items |
+| `RUNBOOK.md` | how to operate it: daily use, updates, rotation, quota |
+| `AUDIT-2.md` | the second adversarial pass — every claim with its evidence |
+| `E2E-RESULTS.md` | the live end-to-end run, graded from logs |
+| `OPERATING-RULES.md` | the standing rules the work was done under |
+| `MCP-SERVERS.md` | every third-party server, its pin, licence and allowlist |
+| `AUDIT-agentic-os.md` | the **first** audit, of the pre-Hermes system. Its findings drove this work; `AUDIT-2.md` supersedes its verdicts |
+| `archive/` | history. Not reference. See below |
+
+Everything in `archive/` is superseded by all of the above.
 
 ## How to treat the archive
 

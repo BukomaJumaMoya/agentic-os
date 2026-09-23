@@ -97,7 +97,7 @@ fixed-text alert saying so.
 
 ```
 1  tool surface        nothing outside the manifest on the Telegram surface
-2  approval patch      reading ~/.hermes/.env still asks
+2  approval patch      reading %LOCALAPPDATA%\hermes\.env still asks
 3  command_allowlist   still empty
 4  telegram allow-list exactly one user, matched by SHA-256
 5  mcp include lists   config.yaml agrees with hermes/surface-manifest.json
@@ -173,8 +173,8 @@ Every credential lives in exactly one `.env`. That is the rule; one copy each.
 
 | credential | file |
 |---|---|
-| `GEMINI_API_KEY` | `~/.hermes/.env` **and** the User env var |
-| `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USERS` | `~/.hermes/.env` |
+| `GEMINI_API_KEY` | `%LOCALAPPDATA%\hermes\.env` |
+| `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USERS` | `%LOCALAPPDATA%\hermes\.env` |
 | `TAVILY_API_KEY` | `agents/research/.env` |
 | `CLICKUP_TOKEN`, `CLICKUP_TEAM_ID` | `agents/pm/.env` |
 | `GITHUB_TOKEN` | `agents/coding/.env` |
@@ -184,7 +184,20 @@ Every credential lives in exactly one `.env`. That is the rule; one copy each.
 
 The model-provider keys are deliberately duplicated per agent: a shared file
 would defeat per-agent isolation, which is what stops the research agent
-reaching a ClickUp token.
+reaching a ClickUp token. Nothing else is duplicated, and one path matters more
+than the rest:
+
+> **Hermes' own `.env` is `%LOCALAPPDATA%\hermes\.env`.** Not `~/.hermes` —
+> that path appeared in this repository's own rotation checklist until
+> 2026-09-23, a rotation followed it, all six agent files were updated and
+> Hermes' was not. The gateway came up with a revoked bot token and Telegram
+> went silent. `check_keys.py` reads the real path and would have caught it in
+> one command.
+
+`GEMINI_API_KEY` was also once kept *only* as a User environment variable. A
+scheduled task does not inherit the interactive user's environment, so the
+gateway had no key while `hermes` in a terminal worked — the file copy is the
+one that counts now, and an environment copy is optional.
 
 **To rotate:** edit the `.env` in an editor. Never paste a key into a terminal
 or a chat — it lands in scrollback and transcripts. Then:
@@ -268,11 +281,20 @@ is right.
 ## 9. Routine checks
 
 ```bash
-python hermes/check_keys.py               # credentials still alive
-python hermes/redact_docs.py --check      # nothing leaked into documentation/
-python hermes/gateway_launcher.py --check # the guard, without starting anything
-hermes cron list                          # jobs, schedules, last run
+python hermes/check_keys.py                  # credentials still alive
+python hermes/verify_agents.py               # all six agents boot and match the manifest
+python hermes/redact_docs.py --check         # nothing leaked into documentation/
+python hermes/gateway_launcher.py --check    # the guard, without starting anything
+hermes cron list                             # jobs, schedules, last run
 ```
+
+`verify_agents.py` asks the **agents**, where the guard asks Hermes. It spawns
+each server over stdio exactly as Hermes does and compares what the process
+publishes — tool names both ways, and the `readOnlyHint` on each one — against
+the manifest. That second check is the approval gate itself: a write tool that
+gained the annotation would silently stop asking. Where a read tool is free it
+is called for real; where it would spend model quota the line says `schema
+only`, rather than claiming more than was checked.
 
 Before shipping a change that touches the invariants — the tool-surface
 allowlist, the startup guard, the approval patch, per-agent `.env` isolation,

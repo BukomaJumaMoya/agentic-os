@@ -268,7 +268,7 @@ cron documentation:
 
 > If the agent's final response contains `[SILENT]`, delivery is suppressed
 > entirely. The output is still saved locally for audit (in
-> `~/.hermes/cron/output/`), but no message is sent to the delivery target.
+> `%LOCALAPPDATA%\hermes\cron/output/`), but no message is sent to the delivery target.
 > Failed jobs always deliver regardless of the `[SILENT]` marker.
 
 Hermes also injects the instruction into every cron prompt itself, which the
@@ -333,10 +333,10 @@ Job '2d6314d20865': primary provider resolve failed
 not inherit when started as a service. Hermes fell silently to OpenRouter on
 every turn — which also explains why two of five turns in the original
 end-to-end run finished on the fallback model. The key now lives in
-`~/.hermes/.env`, and cron runs since show `provider=gemini`.
+`%LOCALAPPDATA%\hermes\.env`, and cron runs since show `provider=gemini`.
 
 The README's claim that `GEMINI_API_KEY` "is read from the environment, so it
-does not have to be written into `~/.hermes/.env`" was true for an interactive
+does not have to be written into `%LOCALAPPDATA%\hermes\.env`" was true for an interactive
 shell and wrong for the service.
 
 ### 3. No delivery target resolved
