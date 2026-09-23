@@ -161,8 +161,12 @@ def python_exe() -> str:
     """
     import os
     repo = Path(__file__).resolve().parent.parent
-    for candidate in (repo / "agents" / ".venv" / "Scripts" / "python.exe",
-                      repo / "agents" / ".venv" / "bin" / "python"):
-        if candidate.exists():
-            return str(candidate)
-    return sys.executable
+    # Only the interpreter for THIS platform. Existence alone is not enough: a
+    # Windows checkout mounted into a Linux container still contains
+    # agents/.venv/Scripts/python.exe, which exists and cannot run. The agent
+    # then produced no output at all and every stdio test timed out after 180
+    # seconds against an empty stderr, which is a miserable thing to debug.
+    candidate = (repo / "agents" / ".venv" / "Scripts" / "python.exe"
+                 if os.name == "nt"
+                 else repo / "agents" / ".venv" / "bin" / "python")
+    return str(candidate) if candidate.exists() else sys.executable

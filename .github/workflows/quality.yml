@@ -133,8 +133,14 @@ jobs:
           echo "TAVILY_API_KEY=tvly-${pad}${pad}00" >> agents/research/.env
           echo "CLICKUP_TOKEN=pk_""0_${pad}${pad}" >> agents/pm/.env
           echo "CLICKUP_TEAM_ID=0" >> agents/pm/.env
-          mkdir -p devroot
-          echo "CODING_ROOT=$PWD/devroot" >> agents/coding/.env
+          # The dev root must be OUTSIDE the checkout. The coding agent refuses
+          # any project that is, contains, or sits inside its own repository --
+          # agents/*/.env hold every credential in the system, and a project
+          # path covering them would hand Pi's bash the lot. Pointing
+          # CODING_ROOT at $PWD/devroot tripped exactly that rule.
+          devroot="${RUNNER_TEMP:-/tmp}/devroot"
+          mkdir -p "$devroot"
+          echo "CODING_ROOT=$devroot" >> agents/coding/.env
           echo "CODING_SANDBOX=host" >> agents/coding/.env
           echo "provisioned throwaway .env for: research pm coding docs"
 

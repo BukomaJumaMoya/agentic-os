@@ -12,6 +12,7 @@ escape" has to be re-established on every change.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -28,7 +29,25 @@ from mcp_client import MCPStdioClient, python_exe  # noqa: E402
 
 PY = python_exe()   # repo venv if present, else this interpreter
 AGENT_PATH = str(REPO / "agents" / "coding" / "main.py")
-DEV_ROOT = Path(r"D:\Bukoma Juma Moya\Dev")
+def _dev_root() -> Path:
+    """The root the agent is actually configured with, on this machine.
+
+    Hardcoding the Windows path made every confinement assertion meaningless
+    on Linux: there, `Path(r"D:\\...")` is one relative filename, so
+    "rejects C:\\Windows" passed for the wrong reason while "allows a path
+    inside the dev root" failed. The agent reads CODING_ROOT from its own
+    .env, so this reads the same value.
+    """
+    env = REPO / "agents" / "coding" / ".env"
+    if env.exists():
+        for line in env.read_text(encoding="utf-8-sig", errors="replace").splitlines():
+            match = re.match(r"\s*CODING_ROOT\s*=(.+)$", line)
+            if match:
+                return Path(match.group(1).strip().strip('"').strip("'"))
+    return Path.home() / "Dev"
+
+
+DEV_ROOT = _dev_root()
 
 PASSED: list[str] = []
 FAILED: list[str] = []
@@ -131,13 +150,16 @@ def test_changes_are_observed_from_git() -> None:
 def test_confinement_offline() -> None:
     from _common.paths import ConfinementError, confine_existing  # noqa: PLC0415
 
+    # Built RELATIVE to the configured root, so each one is genuinely outside
+    # it on whichever platform this runs on, plus the platform's own classics.
+    # The previous list was five Windows literals; on Linux they are relative
+    # filenames, so "rejects C:\Windows\System32" passed for the wrong reason.
     outside = [
-        r"C:\Windows\System32",
-        r"C:\Users\HP\AppData\Local\hermes",
-        str(REPO.parent.parent.parent),
+        str(DEV_ROOT.parent),
+        str(DEV_ROOT.parent / "elsewhere"),
         "..",
-        r"D:\Bukoma Juma Moya",
-        "/etc",
+        r"C:\Windows\System32" if os.name == "nt" else "/etc",
+        r"C:\Users\HP\AppData\Local\hermes" if os.name == "nt" else "/usr/local",
     ]
     for candidate in outside:
         try:
@@ -146,7 +168,7 @@ def test_confinement_offline() -> None:
         except ConfinementError:
             check(f"rejects {candidate!r}", True)
 
-    inside = confine_existing(str(DEV_ROOT / "Personal"), DEV_ROOT, must_exist=False)
+    inside = confine_existing(str(DEV_ROOT / "some-project"), DEV_ROOT, must_exist=False)
     check("allows a path inside the dev root", str(inside).startswith(str(DEV_ROOT)))
 
 
@@ -194,8 +216,13 @@ def test_cannot_be_pointed_at_its_own_secrets() -> None:
         ("a directory inside the repo", REPO / "agents"),
         ("the agent holding the keys", REPO / "agents" / "pm"),
         ("an ancestor containing the repo", REPO.parent),
-        ("the development root itself", DEV_ROOT),
     ]
+    # The dev root is only self-referential when the checkout actually sits
+    # inside it -- true on this machine, false on a runner whose root is a
+    # temp directory. Asserting it unconditionally tested the layout, not the
+    # rule.
+    if REPO.is_relative_to(DEV_ROOT):
+        hostile.append(("the development root itself", DEV_ROOT))
     for label, path in hostile:
         try:
             coding.reject_if_self(Path(path).resolve())
@@ -324,12 +351,17 @@ def test_server_tools() -> None:
 
 
 def test_server_rejects_paths_outside_dev_root() -> None:
+    # Every entry must be OUTSIDE the configured root on the platform this runs
+    # on. Windows literals are relative filenames on Linux, so
+    # `C:\Windows\Temp\evil` resolved to <root>/C:\Windows\Temp\evil -- inside
+    # the root, correctly allowed, and the assertion failed while the
+    # confinement was working exactly as designed.
     hostile = [
-        r"C:\Windows\Temp\evil",
-        r"C:\Users\HP\AppData\Local\hermes",
-        r"D:\Bukoma Juma Moya",
-        r"..\..\..\..\Windows",
-        "/etc/cron.d",
+        str(DEV_ROOT.parent),
+        str(DEV_ROOT.parent / "evil"),
+        "..",
+        r"..\..\..\..\Windows" if os.name == "nt" else "../../../../etc",
+        r"C:\Windows\Temp\evil" if os.name == "nt" else "/etc/cron.d",
     ]
     with MCPStdioClient([PY, AGENT_PATH]) as client:
         for path in hostile:
