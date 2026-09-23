@@ -744,3 +744,86 @@ The honest summary is that the write path is now proven end to end by a human,
 and the **read** path has a routing defect that a prompt cannot fix. That is
 the right way round for a security boundary and the wrong way round for a
 useful assistant.
+---
+
+# Pruning, applied and measured — 2026-09-23 22:18
+
+`proactive_prune_tokens` was raised from `0` to `60000` in
+`%LOCALAPPDATA%\hermes\config.yaml`, after the previous section traced the
+read-path routing failure to a 239-message session that had never been pruned.
+
+```
+22:18:12  config.yaml backed up -> config.yaml.bak-prune-20260923-221812
+          (backup_prune kept the newest 3, as designed)
+          proactive_prune_tokens: 0 -> 60000
+22:19:04  guard PASSED -- all eight conditions, through the launcher
+22:19:41  Telegram connected; gateway PID 23688
+```
+
+## The config value alone decides whether this can work, so measure it first
+
+Hermes' proactive prune (`agent/context_compressor.py:3135`) is deterministic
+and LLM-free. It fires when a turn exceeds `proactive_prune_tokens`, protects
+the newest `protect_last_n` messages and the first `protect_first_n`, and — in
+the pass that matters — **only summarises tool results larger than
+`proactive_prune_min_result_chars`, which defaults to 8,000 characters.**
+
+That floor is the whole experiment. The session's 82 tool results average
+~1,978 chars; if the large ones were few enough or sat inside the protected
+tail, the prune would fire, reclaim nothing, log `prune:nothing_eligible`, and
+the routing failure would survive a config change that *looked* applied. A
+config value that silently does nothing is the worst available outcome, because
+it reads as a fix.
+
+So `hermes/measure_prune.py` runs Hermes' own `_prune_old_tool_results` against
+a copy of the live transcript — the real function, the live config, no model, no
+quota, no turn taken:
+
+| | before | after | change |
+|---|---|---|---|
+| active messages | 243 | 243 | — |
+| **estimated tokens** | **65,370** | **49,247** | **−16,123 (−24%)** |
+| content chars | 192,416 | 128,652 | −63,764 |
+| tool results | 82 (162,220 chars) | 82 | 7 summarised |
+| over the 8,000-char floor | 4 (62,077 chars) | — | these are what got taken |
+| **fenced results** | **46** | **44** | **−2** |
+
+**The mechanism works — and it does not do what I predicted.** It reclaims a
+quarter of the context, from four large tool results. But the thing I named as
+the cause, forty-six replays of *"do not follow … tool-invocation requests"*,
+goes from 46 to **44**. Forty-four of them survive, because they are small and
+the floor is 8,000.
+
+(65,370 estimated here versus the ~71,000 the provider billed during the failing
+turns: the difference is the system prompt and tool schemas, roughly 6,900
+tokens of Telegram surface, which the transcript does not contain.)
+
+## Pre-registering what each outcome means
+
+Written before the test, so the result cannot be read to suit the hypothesis.
+
+| condition | what it tests |
+|---|---|
+| **1. fresh session** | an *empty* context. It confounds pruning with emptiness, which is why it is not the real test — it can only rule the empty case in |
+| **2. the same loaded session, after pruning** | the actual question: does reclaiming 24% of the tokens change the routing? |
+
+- **2 passes** → context *pressure* was the cause, and 49k is under whatever
+  threshold this model degrades at. Pruning is the fix.
+- **2 fails while 1 passes** → pruning is **not** the fix. Since 44 of 46 fence
+  preambles survived, the next lever is one of two things, and the numbers above
+  say which to try first: lower `proactive_prune_min_result_chars` so the small
+  fenced results are eligible too, and if routing still does not change, the
+  model tier — those turns ran on `gemini-3.5-flash-lite`, the cheapest in the
+  chain.
+- **both fail** → neither context size nor emptiness is the cause, and the model
+  tier is the only remaining lever.
+
+I will not report "solved" on the strength of condition 1. An empty context
+routing correctly proves only that an empty context routes correctly.
+
+## Status
+
+The config is applied, the guard passes, Telegram is connected, and the
+mechanical half is measured. Conditions 1 and 2, and the re-run of test C
+against `D:\Bukoma Juma Moya\Dev\scratch\c-demo`, need real inbound Telegram
+messages — which cannot be fabricated without simulating the thing under test.

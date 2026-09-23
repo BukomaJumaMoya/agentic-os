@@ -280,9 +280,20 @@ correctly there, context pressure is confirmed and this is the whole fix. If
 they do not, the next lever is the model tier — those turns ran on
 `gemini-3.5-flash-lite`, the cheapest in the chain.
 
-Not applied here, because it changes live runtime behaviour on a machine in
-daily use, and that is the operator's call rather than a side effect of a
-report.
+**Applied 2026-09-23 22:18**, and then measured before trusting it, because the
+default `proactive_prune_min_result_chars: 8000` could have made it a no-op that
+reads as a fix. `hermes/measure_prune.py` runs Hermes' own deterministic prune
+against a copy of the live transcript: it reclaims **16,123 tokens, 24%**, from
+four large tool results — but takes the fenced-result count only from **46 to
+44**, because the other forty-two are small and the floor is 8,000.
+
+So the mechanism works and it does *not* do what I predicted. If routing changes
+after pruning, context pressure was the cause. If it does not, pruning is not
+the fix, the next lever is lowering that floor so the small fenced results are
+eligible, and after that the model tier — those turns ran on
+`gemini-3.5-flash-lite`, the cheapest in the chain. Condition 1 (a fresh
+session) cannot settle this either way: an empty context routing correctly
+proves only that an empty context routes correctly.
 
 **2. Test injection through its three real carriers.** Put a hostile instruction
 in a ClickUp task description, a GitHub PR body and an n8n payload, and watch
