@@ -109,7 +109,7 @@ Each file holds only what that agent needs. Names only:
 
 | file | keys |
 |---|---|
-| `%LOCALAPPDATA%\hermes\.env` | `GEMINI_API_KEY` `OPENROUTER_API_KEY` `GROQ_API_KEY` `TELEGRAM_BOT_TOKEN` `TELEGRAM_ALLOWED_USERS` |
+| `%LOCALAPPDATA%\hermes\.env` | `DEEPSEEK_API_KEY` `GEMINI_API_KEY` `OPENROUTER_API_KEY` `GROQ_API_KEY` `TELEGRAM_BOT_TOKEN` `TELEGRAM_ALLOWED_USERS` |
 | `agents/research/.env` | `TAVILY_API_KEY` + model chain |
 | `agents/pm/.env` | `CLICKUP_TOKEN` `CLICKUP_TEAM_ID` + model chain |
 | `agents/coding/.env` | `GITHUB_TOKEN` `CODING_ROOT` `CODING_SANDBOX` + model chain |
@@ -167,12 +167,26 @@ python hermes/redact_docs.py --check     # nothing leaked into documentation/
 Day-to-day operation, quota management, key rotation and what to do when the
 guard refuses: [`documentation/RUNBOOK.md`](documentation/RUNBOOK.md).
 
-### Capacity
+### Capacity and cost
 
-Free tiers bind, and the numbers are measured, not estimated:
+Hermes runs on a paid key, with two free tiers behind it:
 
-| workflow | input tokens | runs/day |
-|---|---|---|
+| tier | provider | model | limit |
+|---|---|---|---|
+| primary | DeepSeek | `deepseek-flash` (V4.1 Flash) | the account balance |
+| fallback 1 | Gemini | `gemini-3.5-flash-lite` | 250,000 input tokens/day |
+| fallback 2 | OpenRouter | `nvidia/nemotron-3-ultra-550b-a55b:free` | 50 requests/day |
+
+Measured through `tools/logging_proxy.py`, three routing turns on the Telegram
+surface: **about $0.001 a turn off-peak, $0.002 at peak** (2–3 calls, ~9–11k
+prompt tokens each, ~90% of them cache hits after the first call).
+
+Interactive use costs cents a day. The client-engine cron jobs are the real
+cost: one observed run was ~$0.0075–$0.015, and at every 5 and 10 minutes
+that is 432 runs, **roughly $3–6.50 a day** if every run costs the same.
+Arithmetic and evidence: `hermes/configure_providers.py`.
+
+---|---|---|
 | a simple read | 13,200 | ~19 |
 | daily briefing | 16,625 | ~15 |
 | proposal | ~50,000 | ~5 |

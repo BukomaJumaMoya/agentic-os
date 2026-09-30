@@ -21,7 +21,7 @@ WHAT IT RUNS, IN THIS ORDER
 ---------------------------
   1. configure_orchestrator.py    the three MCP servers and their include lists
   2. harden_telegram_surface.py   the Telegram allowlist + the in-process guard
-  3. configure_gemini.py restore  the model chain, and the reasoning-effort trap
+  3. configure_providers.py restore  the model chain, and the reasoning-effort trap
   4. apply_approval_patch.py      secret-store reads require approval again
   5. patch_readonly_hint.py       Hermes reads readOnlyHint at all (see its docstring)
   6. gateway_launcher.py --install  the task reaches the guard; policy reported
@@ -74,7 +74,7 @@ def steps() -> list[tuple]:
         ("Telegram surface + in-process guard",
          REPO / "hermes" / "harden_telegram_surface.py", [], agent, None, True),
         ("model chain",
-         REPO / "hermes" / "configure_gemini.py", ["restore"], agent, None, True),
+         REPO / "hermes" / "configure_providers.py", ["restore"], agent, None, True),
         ("approval patch",
          REPO / "hermes" / "apply_approval_patch.py", [], agent, None, True),
         ("readOnlyHint alias patch",

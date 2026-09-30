@@ -203,7 +203,7 @@ Every credential lives in exactly one `.env`. That is the rule; one copy each.
 
 | credential | file |
 |---|---|
-| `GEMINI_API_KEY` | `%LOCALAPPDATA%\hermes\.env` |
+| `DEEPSEEK_API_KEY`, `GEMINI_API_KEY` | `%LOCALAPPDATA%\hermes\.env` |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USERS` | `%LOCALAPPDATA%\hermes\.env` |
 | `TAVILY_API_KEY` | `agents/research/.env` |
 | `CLICKUP_TOKEN`, `CLICKUP_TEAM_ID` | `agents/pm/.env` |
@@ -246,42 +246,70 @@ value and must change with it, and `docker restart n8n-receiver`.
 
 ---
 
-## 7. Quota — measured, and it binds
+## 7. Model chain, cost and quota
 
-Free tiers: **Gemini 250,000 input tokens per day, per model** (two models in
-the chain), **OpenRouter 50 requests/day account-wide**, **Groq 8,000
-tokens/minute** for the agents.
+| tier | provider | model | what runs out |
+|---|---|---|---|
+| primary | DeepSeek (paid) | `deepseek-flash` | the balance |
+| fallback 1 | Gemini (free) | `gemini-3.5-flash-lite` | 250,000 input tokens/day |
+| fallback 2 | OpenRouter (free) | `nvidia/nemotron-3-ultra-550b-a55b:free` | 50 requests/day, account-wide |
 
-| workflow | Hermes calls | input tokens | runs/day on the primary |
+Groq stays out of Hermes' chain: its 8,000 tokens/minute cannot fit one routing
+turn. It still serves the agents, from their own `.env` files.
+
+Set and verified by one command, which `post_update.py` also runs:
+
+```bash
+python hermes/configure_providers.py restore
+```
+
+### Cost, measured
+
+Three routing turns through `tools/logging_proxy.py`, priced at deepseek-flash
+rates (per 1M tokens: cache hit $0.003 / miss $0.15 / output $0.60 off-peak;
+double at peak, 01:00–04:00 and 06:00–10:00 UTC on weekdays):
+
+| turn | calls | prompt tokens/call | latency/call | off-peak | peak |
+|---|---|---|---|---|---|
+| research | 2 (+1 title) | 9,113 → 9,963 | 1.3–1.4s | $0.0011 | $0.0023 |
+| n8n list | 2 (+1 title) | 9,118 → 9,357 | 1.2s | $0.0010 | $0.0019 |
+| research + kola | 3 (+1 title) | 9,139 → 11,123 | 1.4–2.3s | $0.0007 | $0.0014 |
+
+No 4xx on any routing call. The one 400 per new session is the title helper
+asking for `response_format: json_schema`, which DeepSeek does not offer; Hermes
+retries without it and gets a 200.
+
+**A normal day:** 30 interactive turns is about $0.03–0.07. The cron jobs are
+most of the bill. `client-coordinator` (every 5 min) and `reply-processor` (every
+10 min) come to 432 runs a day. One observed client-engine run cost $0.0075
+off-peak / $0.015 peak, which would make it **~$3.30–6.50 a day**. That comes from
+one sample, so measure it before relying on it.
+
+### Watching the balance
+
+```bash
+curl -s -H "Authorization: Bearer $DEEPSEEK_API_KEY" https://api.deepseek.com/user/balance
+```
+
+When the balance is spent DeepSeek refuses and the chain falls to Gemini, then
+OpenRouter: the free-tier limits below apply again until you top up.
+
+| workflow | Hermes calls | input tokens | runs/day on Gemini |
 |---|---|---|---|
 | simple read | 2 | ~13,200 | ~19 |
 | W2 daily briefing | 2 | **16,625** | ~15 |
 | W1 proposal | 4–6 | ~50,000 | ~5 |
 | W4 code task | 10+ | ~100,000 | ~2 |
 
-Roughly double those before the chain falls to OpenRouter, which then gives
-about a dozen more turns before it too is spent for the day.
+Options when spend or quota is the problem:
 
-### When a quota is hit
-
-You will see replies arriving from `nvidia/nemotron-3-ultra…` instead of
-`gemini-*`, or a `RESOURCE_EXHAUSTED` in the logs.
-
-```bash
-grep -c "provider=gemini" %LOCALAPPDATA%\hermes\logs\agent.log
-grep "RESOURCE_EXHAUSTED" %LOCALAPPDATA%\hermes\logs\errors.log | tail -3
-```
-
-Options, in order of how much they cost you:
-
-1. **Wait.** The per-model cap resets at 00:00 UTC.
-2. **Pause a scheduled job** — `hermes cron pause <id>`. W2 costs about one
-   proposal a day.
-3. **Narrow a prompt.** W2 went from 63,000 to 16,625 tokens purely by asking
+1. **Pause a scheduled job** with `hermes cron pause <id>`. The 5- and 10-minute
+   client-engine jobs are the largest line by far.
+2. **Narrow a prompt.** W2 went from 63,000 to 16,625 tokens purely by asking
    for one thing instead of surveying the workspace.
-4. **Pay for Gemini.** The only option that removes the ceiling.
+3. **Top up DeepSeek** at platform.deepseek.com/top_up.
 
-Do not raise `max_turns` or add polling to work around a quota; it spends the
+Do not raise `max_turns` or add polling to work around a limit; it spends the
 remainder faster.
 
 ---

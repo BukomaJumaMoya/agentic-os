@@ -316,7 +316,7 @@ one update away from silently not existing, and that has already happened once.
 |---|---|
 | 1 | `configure_orchestrator.py` — MCP servers and include lists |
 | 2 | `harden_telegram_surface.py` — Telegram allowlist + in-process guard |
-| 3 | `configure_gemini.py restore` — model chain, reasoning-effort assertion |
+| 3 | `configure_providers.py restore` — model chain (DeepSeek → Gemini → OpenRouter), reasoning-effort assertion |
 | 4 | `apply_approval_patch.py` — secret-store reads require approval |
 | 5 | `gateway_launcher.py --install` — the task reaches the guard |
 | 6 | `check_telegram_surface.py` — all seven conditions, under Hermes' interpreter |

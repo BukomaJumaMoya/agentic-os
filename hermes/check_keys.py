@@ -127,6 +127,12 @@ def check_gemini(key: str):
                 {"x-goog-api-key": key})
 
 
+def check_deepseek(key: str):
+    """GET /user/balance: authenticates, and is the number that runs out."""
+    return _get("https://api.deepseek.com/user/balance",
+                {"Authorization": f"Bearer {key}"})
+
+
 def check_clickup(key: str):
     return _get("https://api.clickup.com/api/v2/user", {"Authorization": key})
 
@@ -172,6 +178,7 @@ VALIDATORS = {
     "GROQ_API_KEY": check_groq,
     "OPENROUTER_API_KEY": check_openrouter,
     "GEMINI_API_KEY": check_gemini,
+    "DEEPSEEK_API_KEY": check_deepseek,
     "CLICKUP_TOKEN": check_clickup,
     "TELEGRAM_BOT_TOKEN": check_telegram,
     "TAVILY_API_KEY": check_tavily,
