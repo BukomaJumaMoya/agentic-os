@@ -21,6 +21,13 @@
   ],
   "telegram_allowed_users_sha256": "852889e698b302eb882b0d5739eec3e0840fa7434d8124d92fb92b8fe6983320",
 
+  "_airtable": [
+    "airtable: vendor-hosted remote MCP, installed from Hermes' bundled catalog",
+    "on 2026-09-24 via a desktop suggestion pill. Registered but NOT on the Telegram",
+    "or cron surface. Nine of its 46 tools are included; the delete, schema, automation,",
+    "interface and list_secrets tools are not. See hermes/configure_orchestrator.py."
+  ],
+
   "_write_tools": [
     "Tools that change something outside this machine, and must therefore be",
     "gated by Hermes' per-tool approval before the RPC is sent.",
@@ -37,7 +44,10 @@
     "pm_action",
     "start_code_task",
     "github_action",
-    "run_workflow"
+    "run_workflow",
+    "create_records_for_table",
+    "update_records_for_table",
+    "create_record_comment"
   ],
 
   "tools": {
@@ -64,6 +74,16 @@
     "run_workflow": "n8n_agent",
 
     "kola_catalogue": "kola_agent",
-    "kola_query": "kola_agent"
+    "kola_query": "kola_agent",
+
+    "list_bases": "airtable",
+    "list_tables_for_base": "airtable",
+    "get_table_schema": "airtable",
+    "list_records_for_table": "airtable",
+    "search_records": "airtable",
+    "list_record_comments": "airtable",
+    "create_records_for_table": "airtable",
+    "update_records_for_table": "airtable",
+    "create_record_comment": "airtable"
   }
 }

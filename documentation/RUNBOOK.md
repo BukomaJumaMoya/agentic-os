@@ -155,6 +155,17 @@ del %LOCALAPPDATA%\hermes\cache\mcp_schema_cache.json
 hermes gateway restart
 ```
 
+**If Telegram is quiet and the guard log has no new line**, the task died
+before the guard ran. Run the VBS by hand to see why:
+
+```
+cscript //Nologo %LOCALAPPDATA%\hermes\gateway-service\Hermes_Gateway.vbs
+```
+
+From 2026-09-22 to 2026-09-30 that printed `Expected end of statement` (a
+quoting bug in `gateway_launcher.py --install`, now fixed). The task exited 1
+on every start, and no alert fired because the guard never ran.
+
 A refusal is the system working. Do not start the gateway with `--force` or by
 editing the guard; fix the condition.
 
@@ -279,11 +290,38 @@ No 4xx on any routing call. The one 400 per new session is the title helper
 asking for `response_format: json_schema`, which DeepSeek does not offer; Hermes
 retries without it and gets a 200.
 
-**A normal day:** 30 interactive turns is about $0.03–0.07. The cron jobs are
-most of the bill. `client-coordinator` (every 5 min) and `reply-processor` (every
-10 min) come to 432 runs a day. One observed client-engine run cost $0.0075
-off-peak / $0.015 peak, which would make it **~$3.30–6.50 a day**. That comes from
-one sample, so measure it before relying on it.
+### Who runs on what
+
+| job | schedule | model | sampled cost per run (off-peak / peak) |
+|---|---|---|---|
+| Telegram routing turn | on demand | DeepSeek `deepseek-flash` | $0.0007–0.0011 / $0.0014–0.0023 |
+| W2 daily briefing | weekdays 07:30 | DeepSeek | $0.0005 / $0.0009 |
+| W3 weekly review | Mondays 08:00 | DeepSeek | $0.0011 / $0.0022 |
+| followup-monitor | weekdays 09:00 | DeepSeek | $0.0005 / $0.0010 |
+| client-coordinator | every 30 min | Gemini `gemini-3.1-flash-lite` (free) | $0 — ~94k input tokens |
+| reply-processor | every 60 min | Gemini `gemini-3.1-flash-lite` (free) | $0 — ~124k input tokens |
+| n8n notice drain | every minute | none (script) | $0 |
+
+Every figure is one real run on 2026-09-30, priced from the tokens Hermes
+recorded for that session, not estimated. A job's own `provider`/`model`
+(`hermes cron edit <id> --provider gemini --model …`) routes it; verified in
+the session record (`billing_provider: gemini`).
+
+**A normal day on DeepSeek: about $0.03–0.08** — 30 Telegram turns plus the
+three scheduled jobs (~$0.001). The Hermes **desktop app** uses the same config
+and is the one large, variable item: one long desktop session on 2026-09-30 was
+38 calls and $0.13 on its own.
+
+**The two client-engine jobs cannot reach DeepSeek**, even when Gemini runs out:
+a cron job's fallback is the global chain (Gemini 3.5, then OpenRouter), and
+DeepSeek is the primary, not a fallback. What they *do* spend is free quota:
+at ~100k tokens a run, `gemini-3.1-flash-lite`'s 250k/day lasts about two runs,
+after which they fall to the same free tiers the interactive chain depends on.
+
+They also do not work yet. The cron surface has no Airtable and no Gmail, so
+both jobs call unrelated tools and end `[SILENT]` or `[CRON_FAILURE]`. Any write
+they attempt is refused instantly by the approval gate (no human in a cron
+run), never left waiting.
 
 ### Watching the balance
 
@@ -303,14 +341,35 @@ OpenRouter: the free-tier limits below apply again until you top up.
 
 Options when spend or quota is the problem:
 
-1. **Pause a scheduled job** with `hermes cron pause <id>`. The 5- and 10-minute
-   client-engine jobs are the largest line by far.
+1. **Pause a scheduled job** with `hermes cron pause <id>`. The client-engine
+   jobs are the largest consumer of free quota by far.
 2. **Narrow a prompt.** W2 went from 63,000 to 16,625 tokens purely by asking
    for one thing instead of surveying the workspace.
 3. **Top up DeepSeek** at platform.deepseek.com/top_up.
 
 Do not raise `max_turns` or add polling to work around a limit; it spends the
 remainder faster.
+
+---
+
+### Airtable (remote MCP server)
+
+Installed 2026-09-24 06:49 from Hermes' bundled catalog
+(`hermes-agent/optional-mcps/airtable`) by a desktop-app suggestion pill, which
+appears whenever "airtable" is typed or spoken. OAuth consent was completed in
+the browser 28 seconds later, with full read and write scope.
+
+Registered like an agent: `trust: untrusted`, nine of its 46 tools included
+(six reads; `create_records_for_table`, `update_records_for_table` and
+`create_record_comment` as writes that require approval), resources and prompts
+off. No delete, schema, automation or `list_secrets` tool is included. It is
+**not** on the Telegram or cron surface. Adding it to either is a decision,
+not a fix. Defined in `hermes/configure_orchestrator.py` (`REMOTE_SPEC`) and the
+manifest.
+
+To revoke the grant: airtable.com → Account → Integrations → third-party
+integrations → Hermes, then delete
+`%LOCALAPPDATA%\hermes\mcp-tokens\airtable*.json`.
 
 ---
 

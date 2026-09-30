@@ -34,6 +34,7 @@ apply_approval_patch.py.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import sys
 from datetime import datetime
@@ -103,8 +104,32 @@ AGENT_SPEC = {
 # round, and it is why the annotation is checked in the guard.
 SERVER_TRUST = "untrusted"
 
+# Remote servers: vendor-hosted, URL only, no process of ours. Same trust and
+# the same explicit include list as the agents.
+#
+# airtable was installed from Hermes' bundled catalog (optional-mcps/airtable)
+# via a desktop suggestion pill on 2026-09-24 06:49, OAuth granted 06:49:32 with
+# full read+write scope. It publishes 46 tools; nine are included. Excluded on
+# purpose: every delete_*, all schema/base/table/field changes, automations,
+# interfaces, pages, forms, revert_action, and list_secrets. A client pipeline
+# reads and updates records; it does not reshape the base.
+#
+# Not on the Telegram or cron toolsets: registering a server is not the same
+# as putting it on a surface. See documentation/RUNBOOK.md.
+REMOTE_SPEC = {
+    "airtable": ("https://mcp.airtable.com/mcp", [
+        # read (readOnlyHint: true)
+        "list_bases", "list_tables_for_base", "get_table_schema",
+        "list_records_for_table", "search_records", "list_record_comments",
+        # write (no readOnlyHint -> approval required)
+        "create_records_for_table", "update_records_for_table",
+        "create_record_comment",
+    ]),
+}
+
 # Kept as a name->tools view for the verification loop below.
 AGENT_TOOLS = {name: tools for name, (_dir, tools) in AGENT_SPEC.items()}
+AGENT_TOOLS.update({name: tools for name, (_url, tools) in REMOTE_SPEC.items()})
 
 # The three servers by their real names, so _merge_mcp_servers() treats this as
 # an allowlist instead of falling back to "every globally enabled MCP server".
@@ -172,6 +197,20 @@ def build_mcp_block() -> str:
             "    args:",
             f"      - {(AGENTS / directory / 'main.py').as_posix()}",
             f"    cwd: {(AGENTS / directory).as_posix()}",
+            f"    trust: {SERVER_TRUST}",
+            "    tools:",
+            "      include:",
+        ]
+        lines += [f"        - {tool}" for tool in tools]
+        lines += [
+            "      resources: false",
+            "      prompts: false",
+        ]
+    for name, (url, tools) in REMOTE_SPEC.items():
+        lines += [
+            f"  {name}:",
+            f"    url: {url}",
+            "    auth: oauth",
             f"    trust: {SERVER_TRUST}",
             "    tools:",
             "      include:",
@@ -322,6 +361,12 @@ def main() -> int:
     if message.startswith("FAIL"):
         return 1
 
+    # The marker is a comment, and every script that round-trips config.yaml
+    # through yaml.safe_dump (configure_providers.py) strips comments. Without
+    # this, a marker-less file got a SECOND top-level mcp_servers key appended,
+    # and YAML quietly keeps whichever one is last.
+    if MARKER not in text and re.search(r"^mcp_servers:", text, re.M):
+        text = re.sub(r"^mcp_servers:", MARKER + "\nmcp_servers:", text, count=1, flags=re.M)
     if MARKER in text:
         head, _, tail = text.partition(MARKER)
         # Drop the previous block: everything from the marker to the next

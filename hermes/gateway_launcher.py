@@ -261,7 +261,12 @@ def install() -> int:
 
     text = vbs.read_text(encoding="utf-8")
     launcher = f'"{hermes_python()}" "{Path(__file__).resolve()}"'
-    wanted = f'sh.Run "{launcher}", 0, False'
+    # A quote inside a VBScript string literal is written "". This line once
+    # wrapped the quoted command in bare quotes -- a compile error ("Expected
+    # end of statement", line 18) -- so from 2026-09-22 until 2026-09-30 the
+    # scheduled task exited 1 on every start without reaching the guard, and
+    # the guard's alerting never fired because the guard never ran.
+    wanted = 'sh.Run "' + launcher.replace('"', '""') + '", 0, False'
 
     if wanted in text:
         print("  launcher already installed in Hermes_Gateway.vbs")

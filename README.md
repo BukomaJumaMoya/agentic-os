@@ -181,9 +181,10 @@ Measured through `tools/logging_proxy.py`, three routing turns on the Telegram
 surface: **about $0.001 a turn off-peak, $0.002 at peak** (2–3 calls, ~9–11k
 prompt tokens each, ~90% of them cache hits after the first call).
 
-Interactive use costs cents a day. The client-engine cron jobs are the real
-cost: one observed run was ~$0.0075–$0.015, and at every 5 and 10 minutes
-that is 432 runs, **roughly $3–6.50 a day** if every run costs the same.
+Scheduled jobs are sampled the same way: the three on DeepSeek cost about
+$0.001 a run, and the two client-engine jobs are pinned to free Gemini. **A
+normal day on DeepSeek is about $0.03–0.08**; long desktop-app sessions are the
+one large, variable item. Per-job figures: `documentation/RUNBOOK.md` §7.
 Arithmetic and evidence: `hermes/configure_providers.py`.
 
 ---|---|---|

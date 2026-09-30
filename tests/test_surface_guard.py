@@ -341,6 +341,39 @@ def test_write_approval_armed() -> None:
           "the healthy case was refused")
 
 
+def _live_remote_hints(server: str) -> dict[str, bool]:
+    """{tool: readOnlyHint} for a remote server, discovered live through
+    Hermes' OWN connect path (OAuth, transport fallback) and classified by the
+    gate's OWN function -- so this is what the gate would see, not a second
+    opinion. {} on any failure, which the caller reports as unverifiable."""
+    home = guard.hermes_home() / "hermes-agent"
+    sys.path.insert(0, str(home))
+    try:
+        from hermes_cli import mcp_config
+        from tools import mcp_tool_discovery as discovery
+        from tools.mcp_tool_registration import _annotation_read_only_hint
+        cfg = mcp_config._get_mcp_servers()[server]
+        captured = []
+        # The probe imports _connect_server from here at call time.
+        real_connect = discovery._connect_server
+
+        async def capture(name, config):
+            conn = await real_connect(name, config)
+            captured.append(conn)
+            return conn
+
+        discovery._connect_server = capture
+        try:
+            mcp_config._probe_single_server(server, cfg)
+        finally:
+            discovery._connect_server = real_connect
+        return {t.name: _annotation_read_only_hint(t) is True
+                for t in captured[0]._tools}
+    except Exception as exc:                                # pragma: no cover
+        print(f"   live discovery of {server} failed: {type(exc).__name__}: {exc}")
+        return {}
+
+
 def test_annotations_match_the_manifest() -> None:
     """The gate is aimed by readOnlyHint, so check what the agents PUBLISH.
 
@@ -370,9 +403,35 @@ def test_annotations_match_the_manifest() -> None:
     directories = {"research": "research", "pm": "pm",
                    "coding_agent": "coding", "docs_agent": "docs",
                    "n8n_agent": "n8n", "kola_agent": "kola"}
-    missing = sorted(set(owners) - set(directories))
+    # Vendor-hosted servers have no process of ours to start over stdio. What
+    # they publish is read instead from Hermes' own discovery cache -- the
+    # annotations Hermes received over the wire from that server -- and checked
+    # the same way. No cache is a FAILURE here, not a skip: an unverified write
+    # tool is exactly what this test exists to catch.
+    remote = {"airtable"}
+    missing = sorted(set(owners) - set(directories) - remote)
     check("every manifest server has a known directory", not missing,
           f"no directory mapped for {missing}; add it here")
+
+    for server in sorted(remote & set(owners)):
+        declared = owners[server]
+        hints = guard.cached_hints()
+        if not declared <= set(hints):
+            # The launcher deletes the cache on every start, so post_update.py
+            # usually arrives here without one. Connect live instead.
+            hints = _live_remote_hints(server)
+        unseen = sorted(declared - set(hints))
+        check(f"{server}: every manifest tool discovered (cache, else live)",
+              not unseen, f"not discovered, so not verifiable: {unseen}")
+        for tool in sorted(declared & set(hints)):
+            if tool in writes:
+                check(f"{server}.{tool}: write tool is NOT annotated read-only",
+                      hints[tool] is not True,
+                      "readOnlyHint is True, so Hermes would run it without asking")
+            else:
+                check(f"{server}.{tool}: read tool IS annotated read-only",
+                      hints[tool] is True,
+                      "missing readOnlyHint, so every call would prompt for approval")
 
     for server, declared in sorted(owners.items()):
         if server not in directories:
