@@ -110,9 +110,9 @@ Each file holds only what that agent needs. Names only:
 | file | keys |
 |---|---|
 | `%LOCALAPPDATA%\hermes\.env` | `DEEPSEEK_API_KEY` `GEMINI_API_KEY` `OPENROUTER_API_KEY` `GROQ_API_KEY` `TELEGRAM_BOT_TOKEN` `TELEGRAM_ALLOWED_USERS` |
-| `agents/research/.env` | `TAVILY_API_KEY` + model chain |
-| `agents/pm/.env` | `CLICKUP_TOKEN` `CLICKUP_TEAM_ID` + model chain |
-| `agents/coding/.env` | `GITHUB_TOKEN` `CODING_ROOT` `CODING_SANDBOX` + model chain |
+| `agents/research/.env` | `TAVILY_API_KEY` `GEMINI_API_KEY` + model chain |
+| `agents/pm/.env` | `CLICKUP_TOKEN` `CLICKUP_TEAM_ID` `GEMINI_API_KEY` + model chain |
+| `agents/coding/.env` | `GITHUB_TOKEN` `DEEPSEEK_API_KEY` `CODING_ROOT` `CODING_SANDBOX` + model chain |
 | `agents/docs/.env` | model chain only |
 | `agents/kola/.env` | `KOLA_API_KEY` |
 | `agents/n8n/.env` | `N8N_API_KEY` `N8N_WEBHOOK_SECRET` |
@@ -169,13 +169,34 @@ guard refuses: [`documentation/RUNBOOK.md`](documentation/RUNBOOK.md).
 
 ### Capacity and cost
 
-Hermes runs on a paid key, with two free tiers behind it:
+Hermes runs on one paid model and nothing else. When DeepSeek is down or the
+balance is spent, Hermes stops answering (startup guard condition 9):
 
 | tier | provider | model | limit |
 |---|---|---|---|
-| primary | DeepSeek | `deepseek-flash` (V4.1 Flash) | the account balance |
-| fallback 1 | Gemini | `gemini-3.5-flash-lite` | 250,000 input tokens/day |
-| fallback 2 | OpenRouter | `nvidia/nemotron-3-ultra-550b-a55b:free` | 50 requests/day |
+| only | DeepSeek | `deepseek-flash` (V4.1 Flash) | the account balance |
+
+The agents choose their own models:
+
+| agent | executor | model (checked against `/models`, 2026-10-02) | behind it |
+|---|---|---|---|
+| pm | direct API call (`_common/llm.py`) | Gemini `gemini-3.8-flash` | Groq `openai/gpt-oss-120b`, then OpenRouter |
+| research | direct API call (`_common/llm.py`) | Gemini `gemini-3.8-flash` | Groq `openai/gpt-oss-120b`, then OpenRouter |
+| coding (tasks) | Pi in the Docker sandbox | DeepSeek `deepseek-flash`, direct to `api.deepseek.com` | none: Pi gets one provider and one key |
+| coding (`github_query`, `docs_query`), docs, kola, n8n | direct API call | Groq `openai/gpt-oss-120b` | OpenRouter |
+
+One real run each, 2026-10-02:
+
+| run | wall time | tokens | served by | cost |
+|---|---|---|---|---|
+| research, quick | 4.7 s | 2,185 in / 227 out | Gemini | free tier |
+| pm_query, W2 question | 8–13 s | ~900 in / 10 out (Gemini step) + ~2,500 in / ~640 out (Groq step) | Gemini, then Groq after a 503 | free tiers |
+| coding task (hello.py) | 12.7 s | 723 in + 12,288 cache read / 177 out, 3 calls | DeepSeek | ~$0.00025 off-peak |
+
+**Gemini 3.8 Flash was overloaded while this was measured**: about 7 of 9 calls
+got HTTP 503 "high demand". pm and research still answered because Groq is
+behind Gemini, and each fallthrough is in the agent's audit log as
+`llm_fallthrough`. With Gemini alone they would have failed most calls that day.
 
 Measured through `tools/logging_proxy.py`, three routing turns on the Telegram
 surface: **about $0.001 a turn off-peak, $0.002 at peak** (2–3 calls, ~9–11k
@@ -193,8 +214,8 @@ Arithmetic and evidence: `hermes/configure_providers.py`.
 | proposal | ~50,000 | ~5 |
 | coding task | ~100,000 | ~2 |
 
-They share one budget: Gemini 250,000 input tokens/day per model, two models in
-the chain, then OpenRouter's 50 requests/day account-wide as the last resort.
+These figures are historical, from when Hermes fell back to free Gemini. Hermes
+no longer has a fallback; today the limit is the DeepSeek balance.
 
 ---
 

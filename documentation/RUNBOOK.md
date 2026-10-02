@@ -226,6 +226,8 @@ Every credential lives in exactly one `.env`. That is the rule; one copy each.
 | `KOLA_API_KEY` | `agents/kola/.env` |
 | `N8N_API_KEY`, `N8N_WEBHOOK_SECRET` | `agents/n8n/.env` |
 | `GROQ_API_KEY`, `OPENROUTER_API_KEY` | one copy per agent, by design |
+| `GEMINI_API_KEY` (agents) | `agents/pm/.env`, `agents/research/.env` (same key as Hermes') |
+| `DEEPSEEK_API_KEY` (Pi) | `agents/coding/.env` (same key as Hermes'; the only key Pi receives) |
 
 The model-provider keys are deliberately duplicated per agent: a shared file
 would defeat per-agent isolation, which is what stops the research agent
@@ -298,6 +300,34 @@ their own per-job Gemini setting, which is not this chain.
 
 Groq stays out of Hermes' chain: its 8,000 tokens/minute cannot fit one routing
 turn. It still serves the agents, from their own `.env` files.
+
+### The agents' models
+
+| agent | executor | model (checked against `/models`, 2026-10-02) | behind it |
+|---|---|---|---|
+| pm | direct API call (`_common/llm.py`) | Gemini `gemini-3.8-flash` | Groq `openai/gpt-oss-120b`, then OpenRouter |
+| research | direct API call (`_common/llm.py`) | Gemini `gemini-3.8-flash` | Groq `openai/gpt-oss-120b`, then OpenRouter |
+| coding (tasks) | Pi in the Docker sandbox | DeepSeek `deepseek-flash`, direct to `api.deepseek.com` | none: Pi gets one provider and one key |
+| coding (`github_query`, `docs_query`), docs, kola, n8n | direct API call | Groq `openai/gpt-oss-120b` | OpenRouter |
+
+One real run each, 2026-10-02:
+
+| run | wall time | tokens | served by | cost |
+|---|---|---|---|---|
+| research, quick | 4.7 s | 2,185 in / 227 out | Gemini | free tier |
+| pm_query, W2 question | 8–13 s | ~900 in / 10 out (Gemini step) + ~2,500 in / ~640 out (Groq step) | Gemini, then Groq after a 503 | free tiers |
+| coding task (hello.py) | 12.7 s | 723 in + 12,288 cache read / 177 out, 3 calls | DeepSeek | ~$0.00025 off-peak |
+
+**Gemini 3.8 Flash was overloaded while this was measured**: about 7 of 9 calls
+got HTTP 503 "high demand". pm and research still answered because Groq is
+behind Gemini, and each fallthrough is in the agent's audit log as
+`llm_fallthrough`. With Gemini alone they would have failed most calls that day.
+
+To change an agent's model: `<AGENT>_GEMINI_MODEL` (Gemini, tried first),
+`<AGENT>_MODEL` (Groq), `<AGENT>_OPENROUTER_MODEL` in that agent's `.env`. For
+Pi: `CODING_PROVIDER` and `CODING_MODEL`. Check the id against the provider's
+`/models` first. Rotating `GEMINI_API_KEY` or `DEEPSEEK_API_KEY` now means
+updating Hermes' `.env` and these agent files.
 
 Set and verified by one command, which `post_update.py` also runs:
 
