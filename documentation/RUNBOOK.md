@@ -24,6 +24,7 @@ Hermes' own gate, and the call does not leave the process until you answer.
 | a coding task | `code: <ClickUp task id or a description>` |
 | create a task | *"Create a task called X in Freelance"* → **approval** |
 | open a PR | *"Open a pull request for that branch"* → **approval** |
+| client pipeline | *"check client replies"*: reads Airtable only, says it cannot see Gmail; any update → **approval** |
 
 Scheduled, unattended:
 
@@ -32,6 +33,9 @@ Scheduled, unattended:
 | W2 daily briefing | 07:30 Mon–Fri | overdue + due today; **silent if nothing** |
 | W3 weekly review | 08:00 Monday | completed, slipped, stale PRs; silent if nothing |
 | n8n notice drain | every minute | delivers queued n8n notices; silent when the queue is empty |
+
+The three client-engine jobs (client-coordinator, reply-processor,
+followup-monitor) are **paused**. See section 7.
 
 ### One job per session — send `/new` between tasks
 
@@ -107,12 +111,12 @@ silently not existing. The script re-applies everything and then proves it:
 
 1. MCP servers and include lists
 2. Telegram surface + the in-process guard
-3. model chain (and the reasoning-effort trap)
+3. model chain: deepseek-flash alone, checked against `GET /models`
 4. approval patch — secret-store reads require approval
 5. `readOnlyHint` alias patch — without it every read tool is gated
 6. elicitation per-call patch — without it Telegram offers "Always Allow"
 7. gateway launcher + scheduled-task policy
-8. the startup guard, all eight conditions
+8. the startup guard, all nine conditions (9: no fallback chain)
 9. the guard's negative tests
 
 Anything but `PASS` at the end means do not start the gateway.
@@ -252,6 +256,27 @@ hermes gateway restart
 value. A `429` counts as valid — the credential authenticated, the account is
 out of quota.
 
+### state.db is a credential-bearing file
+
+**Hermes' `%LOCALAPPDATA%\hermes\state.db` stores credentials in plaintext, by
+design.** It keeps every message, tool call, tool result and reasoning trace
+verbatim, so any key that appears in a session lands there. That includes a
+key pasted into a chat, a `curl -H "Authorization: …"` an agent ran, or an
+`.env` an agent read. A rotated key reappears there within a few sessions of
+being used. On 2026-10-02 a sweep found the live `TELEGRAM_BOT_TOKEN` and
+`DEEPSEEK_API_KEY`, two Airtable PATs, and old OpenRouter, ClickUp and GitHub
+keys. The same goes for `sessions/request_dump_*.json`.
+
+Treat `state.db`, its `-wal`, the `sessions/` folder and every copy of them as
+secrets for **backup and disposal**:
+
+- never sync, upload or attach them; any backup of them is a credential store
+- dispose of an old copy as you would a `.env`, not as a log
+- scrubbing is a one-off clean-up, not a control: redact, then rebuild the
+  search indexes and VACUUM (`hermes sessions optimize`), or the old pages and
+  FTS segments still hold the text. Rotation is the control.
+- a cron run's `session_search` can read this store (AUDIT-2 section 17)
+
 If `N8N_WEBHOOK_SECRET` changes, the n8n workflow's Code node holds the same
 value and must change with it, and `docker restart n8n-receiver`.
 
@@ -261,9 +286,15 @@ value and must change with it, and `docker restart n8n-receiver`.
 
 | tier | provider | model | what runs out |
 |---|---|---|---|
-| primary | DeepSeek (paid) | `deepseek-flash` | the balance |
-| fallback 1 | Gemini (free) | `gemini-3.5-flash-lite` | 250,000 input tokens/day |
-| fallback 2 | OpenRouter (free) | `nvidia/nemotron-3-ultra-550b-a55b:free` | 50 requests/day, account-wide |
+| only | DeepSeek (paid) | `deepseek-flash` (DeepSeek-V4.1-Flash, per `GET /models`) | the balance |
+
+**No fallback, on purpose (2026-10-02).** When DeepSeek is down or the balance
+is spent, Hermes stops answering. It does not hand the conversation to a free
+tier that behaves differently. `restore` writes `fallback_providers: []`,
+removes any legacy `fallback_model`, and fails unless `GET /models` still lists
+the model. Startup guard condition 9 refuses to start the gateway if Hermes'
+own merged fallback chain is non-empty. The paused client-engine cron jobs keep
+their own per-job Gemini setting, which is not this chain.
 
 Groq stays out of Hermes' chain: its 8,000 tokens/minute cannot fit one routing
 turn. It still serves the agents, from their own `.env` files.
@@ -297,9 +328,9 @@ retries without it and gets a 200.
 | Telegram routing turn | on demand | DeepSeek `deepseek-flash` | $0.0007–0.0011 / $0.0014–0.0023 |
 | W2 daily briefing | weekdays 07:30 | DeepSeek | $0.0005 / $0.0009 |
 | W3 weekly review | Mondays 08:00 | DeepSeek | $0.0011 / $0.0022 |
-| followup-monitor | weekdays 09:00 | DeepSeek | $0.0005 / $0.0010 |
-| client-coordinator | every 30 min | Gemini `gemini-3.1-flash-lite` (free) | $0 — ~94k input tokens |
-| reply-processor | every 60 min | Gemini `gemini-3.1-flash-lite` (free) | $0 — ~124k input tokens |
+| followup-monitor (**paused**) | weekdays 09:00 | DeepSeek | $0.0005 / $0.0010 |
+| client-coordinator (**paused**) | every 30 min | Gemini `gemini-3.1-flash-lite` (free) | $0 — ~94k input tokens |
+| reply-processor (**paused**) | every 60 min | Gemini `gemini-3.1-flash-lite` (free) | $0 — ~124k input tokens |
 | n8n notice drain | every minute | none (script) | $0 |
 
 Every figure is one real run on 2026-09-30, priced from the tokens Hermes
@@ -312,16 +343,38 @@ three scheduled jobs (~$0.001). The Hermes **desktop app** uses the same config
 and is the one large, variable item: one long desktop session on 2026-09-30 was
 38 calls and $0.13 on its own.
 
-**The two client-engine jobs cannot reach DeepSeek**, even when Gemini runs out:
-a cron job's fallback is the global chain (Gemini 3.5, then OpenRouter), and
-DeepSeek is the primary, not a fallback. What they *do* spend is free quota:
-at ~100k tokens a run, `gemini-3.1-flash-lite`'s 250k/day lasts about two runs,
-after which they fall to the same free tiers the interactive chain depends on.
+**The client-engine jobs ran on Gemini** (per-job provider), at ~100k tokens a
+run: `gemini-3.1-flash-lite`'s 250k/day lasted about two runs. The global chain
+is now empty, so a job like this has nothing to fall to.
 
-They also do not work yet. The cron surface has no Airtable and no Gmail, so
-both jobs call unrelated tools and end `[SILENT]` or `[CRON_FAILURE]`. Any write
-they attempt is refused instantly by the approval gate (no human in a cron
-run), never left waiting.
+### client-coordinator and reply-processor: PAUSED 2026-10-02
+
+Paused, not deleted (`hermes cron pause 16ec4edab510`, `… 96185b3dcf0d`;
+`hermes cron resume <id>` undoes it). They have never done their job once:
+
+- **Zero successful runs.** 59 recorded sessions (37 + 22) and 177 execution
+  attempts up to 2026-10-02 07:39. Every one ended `[SILENT]`, `[CRON_FAILURE]`
+  or with an "I cannot" answer. **Not one Airtable or Gmail call**, because the
+  cron tool set has neither. The runs spent their turns on
+  `n8n list_workflows`, `github_query`, `kola_catalogue` and `pm_query` instead.
+- **Every write is refused, by design.** No human is present in a cron run to
+  answer the approval card, so the gate refuses any write instantly. The runs
+  tried five: `start_code_task` twice (once pointed at the Hermes home, to
+  "list the Airtable bases using curl"), `run_workflow` twice and
+  `github_action` once. All five came back "The user did not approve". A
+  working version would hit the same refusal on every Airtable update it exists
+  to make.
+- **They cost quota.** About 100k input tokens a run.
+
+Do not resume either job until the client-engine runs as a script with
+pre-approved, narrowly scoped writes, not as a cron agent. A cron agent cannot
+get its writes approved, so one that exists to write cannot work.
+`followup-monitor` (`2feac44c0733`, same skills, same missing tools) was
+paused too, on 2026-10-02. It had not tried a write yet; it would have.
+
+The client engine is now **on demand only**: "check client replies" in
+Telegram (section 1). Two of these cron runs also tried to start coding tasks
+to curl Airtable; see AUDIT-2 section 17.
 
 ### Watching the balance
 
@@ -329,10 +382,10 @@ run), never left waiting.
 curl -s -H "Authorization: Bearer $DEEPSEEK_API_KEY" https://api.deepseek.com/user/balance
 ```
 
-When the balance is spent DeepSeek refuses and the chain falls to Gemini, then
-OpenRouter: the free-tier limits below apply again until you top up.
+When the balance is spent DeepSeek refuses and Hermes stops answering until you
+top up. The table below is what each workflow costs in tokens:
 
-| workflow | Hermes calls | input tokens | runs/day on Gemini |
+| workflow | Hermes calls | input tokens | runs/day on Gemini (historical) |
 |---|---|---|---|
 | simple read | 2 | ~13,200 | ~19 |
 | W2 daily briefing | 2 | **16,625** | ~15 |

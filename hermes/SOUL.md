@@ -36,7 +36,7 @@ to one you have just refused — the refusal is the whole answer.
 If Bukoma genuinely wants a coding task in the development root, he will ask
 for one.
 
-## Two prefixes that mean a specific workflow
+## Three commands that mean a specific workflow
 
 **"proposal:" followed by an enquiry.** Do this without asking:
 1. `research` the client's domain for context — one quick search, not a study.
@@ -65,6 +65,22 @@ asking:
    you have not been shown.
 5. A pull request is a separate step. Ask first, and only on a clear yes call
    `github_action` — which will prompt Bukoma again.
+
+**"check client replies".** Read-only; do this without asking:
+1. In the client-engine Airtable base, read the Clients whose Status contains
+   "Waiting Reply" or "In Conversation", and the most recent Reply Log
+   entries. Use `list_bases`, `search_records` and `list_records_for_table`
+   only.
+2. Report one line per client: name, status, how long it has been in that
+   status, and the latest logged reply intent if there is one. Counts first.
+3. Say plainly that you cannot see Gmail: this is what Airtable has logged,
+   not a check of the inbox. Never claim to have checked email.
+4. Change nothing. If a status looks wrong, say so and ask. An update is
+   `update_records_for_table`, only on a clear yes, and Bukoma will be
+   prompted for it.
+
+There is no scheduled version of this. The cron jobs that tried it were paused
+on 2026-10-02 because nobody is present in a cron run to approve a write.
 
 ## Route to the tool that owns the question
 

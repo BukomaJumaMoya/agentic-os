@@ -1,5 +1,17 @@
 #!/usr/bin/env python3
-"""Hermes on DeepSeek (paid), Gemini then OpenRouter behind it, Groq out.
+"""Hermes on DeepSeek alone. No fallback chain, Groq out.
+
+SINGLE MODEL, ON PURPOSE (2026-10-02)
+-------------------------------------
+Hermes' interactive chain is deepseek-flash and nothing else. A DeepSeek outage
+means Hermes stops answering; it does not quietly degrade to a free tier that
+behaves differently (nemotron misreported in production, Gemini runs dry in ~19
+turns). An outage that is visible beats a downgrade that is not. The startup
+guard (hermes/check_telegram_surface.py, condition 9) refuses to start the
+gateway if any fallback reappears, by either config key Hermes reads.
+
+The two paused client-engine cron jobs carry their own per-job Gemini
+provider; that is a job setting, not this chain, and is left alone.
 
 WHY DEEPSEEK
 ------------
@@ -18,7 +30,8 @@ mid-turn. The cost per turn is measured, not estimated -- see COST below.
 
 MODEL
 -----
-Taken from GET https://api.deepseek.com/models on 2026-09-30, not from docs:
+Taken from GET https://api.deepseek.com/models on 2026-09-30, and re-checked on
+every `restore` (models_lists_hermes_model below), not assumed from docs:
 
     deepseek-flash    name "DeepSeek-V4.1-Flash", 1M context
     deepseek-v4-pro   name "DeepSeek-V4-Pro",     1M context
@@ -74,21 +87,25 @@ REASONING EFFORT
 Hermes encodes "thinking off" for a custom OpenAI-compatible provider as
 top-level ``reasoning_effort: "none"``, and Groq rejected that with HTTP 400.
 DeepSeek accepts it, so no extra_body is set -- the measurement is in the
-comment beside FALLBACK_CHAIN, taken with the chain EMPTY so a 400 could not
+comment beside FALLBACK_KEYS, taken with the chain EMPTY so a 400 could not
 hide behind a failover.
 
 MODES
 -----
-    python hermes/configure_providers.py measure   # via logging proxy, NO fallback
-    python hermes/configure_providers.py measure --with-fallback
-    python hermes/configure_providers.py restore   # direct to DeepSeek, chain back
+    python hermes/configure_providers.py measure   # via logging proxy
+    python hermes/configure_providers.py restore   # direct to DeepSeek
+
+Both write fallback_providers: [] and drop any legacy fallback_model.
 """
 
 from __future__ import annotations
 
+import json
 import os
+import re
 import shutil
 import sys
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 
@@ -103,13 +120,10 @@ PROVIDER_KEY = "deepseek_api"
 PROVIDER = f"custom:{PROVIDER_KEY}"
 HERMES_MODEL = "deepseek-flash"
 
-# Tier 1 is the previous primary: free, its own 250k/day bucket, proven with
-# real routing turns (documentation/DESIGN-NOTES.md). Tier 2 is the last resort,
-# and nemotron-3-ultra rather than lightning, which misreported in production.
-FALLBACK_CHAIN = [
-    {"provider": "gemini", "model": "gemini-3.5-flash-lite"},
-    {"provider": "openrouter", "model": "nvidia/nemotron-3-ultra-550b-a55b:free"},
-]
+# Hermes merges BOTH of these into its fallback chain
+# (hermes_cli/fallback_config.py:get_fallback_chain), so both are cleared.
+FALLBACK_KEYS = ("fallback_providers", "fallback_model")
+
 
 # NO extra_body, on evidence. The Groq defect (Hermes sends reasoning_effort
 # "none" to a custom provider; Groq 400s) was tested for here with the fallback
@@ -137,6 +151,29 @@ def hermes_home() -> Path:
     return (Path(local) if local else Path.home() / "AppData" / "Local") / "hermes"
 
 
+def models_lists_hermes_model() -> tuple[bool, str]:
+    """GET /models with Hermes' own key: is HERMES_MODEL still served?
+
+    Fails closed: no key, no network or an unlisted id all mean "not proven".
+    """
+    env = hermes_home() / ".env"
+    text = env.read_text(encoding="utf-8", errors="replace") if env.exists() else ""
+    match = re.search(r"^\s*DEEPSEEK_API_KEY\s*=(.*)$", text, re.M)
+    key = match.group(1).strip().strip('"').strip("'") if match else ""
+    if not key:
+        return False, "DEEPSEEK_API_KEY not set in Hermes' .env"
+    request = urllib.request.Request(f"{DEEPSEEK_BASE_URL}/models",
+                                     headers={"Authorization": f"Bearer {key}"})
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            served = {m.get("id"): m.get("name") for m in json.load(response).get("data") or []}
+    except Exception as exc:  # the body is never echoed: it can carry the key
+        return False, f"GET /models failed ({type(exc).__name__})"
+    if HERMES_MODEL not in served:
+        return False, f"{HERMES_MODEL} not in GET /models: {sorted(served)}"
+    return True, f"GET /models lists {HERMES_MODEL} ({served[HERMES_MODEL]})"
+
+
 def main() -> int:
     try:
         import yaml
@@ -149,7 +186,6 @@ def main() -> int:
     if mode not in ("measure", "restore"):
         print(__doc__)
         return 2
-    keep_fallback = mode == "restore" or "--with-fallback" in argv
     base_url = PROXY_BASE if mode == "measure" else DEEPSEEK_BASE_URL
 
     config_path = hermes_home() / "config.yaml"
@@ -186,13 +222,9 @@ def main() -> int:
     model_cfg["api_mode"] = "chat_completions"
     print(f"  model: {previous} -> {PROVIDER}/{HERMES_MODEL}")
 
-    if keep_fallback:
-        config["fallback_providers"] = [dict(t) for t in FALLBACK_CHAIN]
-        for index, tier in enumerate(FALLBACK_CHAIN, start=1):
-            print(f"  fallback {index} -> {tier['provider']}/{tier['model']}")
-    else:
-        config["fallback_providers"] = []
-        print("  fallback_providers -> [] (empty, so errors surface)")
+    config["fallback_providers"] = []
+    config.pop("fallback_model", None)
+    print("  fallback_providers -> [], fallback_model removed (single model)")
 
     config_path.write_text(
         yaml.safe_dump(config, sort_keys=False, allow_unicode=True,
@@ -220,21 +252,18 @@ def main() -> int:
     if effort not in ("low", "medium", "high"):
         problems.append(
             f"agent.reasoning_effort is {effort!r}; anything falsy makes Hermes "
-            f"send \"none\", which the fallback tiers reject with HTTP 400")
+            f"send \"none\" on routing calls")
 
-    fallbacks = check.get("fallback_providers")
-    if keep_fallback:
-        # Exact, not truthy: a chain that collapsed to one tier looks fine to
-        # a truthiness check.
-        if [dict(f) for f in (fallbacks or [])] != FALLBACK_CHAIN:
-            problems.append(f"fallback chain is {fallbacks}, expected {FALLBACK_CHAIN}")
-    elif fallbacks:
-        problems.append("fallback_providers not empty; errors will be masked")
-
+    for key in FALLBACK_KEYS:
+        if check.get(key):
+            problems.append(f"{key} is not empty; Hermes must run on one model")
     chain = [(check.get("model") or {}).get("provider")]
-    chain += [f.get("provider") for f in (fallbacks or [])]
-    if "groq" in chain:
-        problems.append(f"groq is in Hermes' chain: {chain}")
+
+    if mode == "restore":
+        served, detail = models_lists_hermes_model()
+        print(f"  {detail}")
+        if not served:
+            problems.append(detail)
 
     telegram = (check.get("platform_toolsets") or {}).get("telegram") or []
     for banned in ("terminal", "code_execution", "file", "computer_use", "browser"):

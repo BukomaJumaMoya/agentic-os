@@ -517,6 +517,38 @@ def test_gate_sees_annotations() -> None:
           "condition 8 is duplicating condition 6")
 
 
+def test_single_model() -> None:
+    """9. Hermes runs on deepseek-flash alone; a fallback that reappears refuses.
+
+    The chain is passed in because this runs outside Hermes' interpreter; in
+    production check() asks Hermes' own get_fallback_chain(), which merges
+    fallback_providers and the legacy fallback_model.
+    """
+    good = {"model": {"provider": "custom:deepseek_api", "default": "deepseek-flash"}}
+    check("deepseek-flash alone passes",
+          guard.check_single_model(good, chain=[])[0] is True,
+          str(guard.check_single_model(good, chain=[])))
+    refuses("a Gemini fallback tier",
+            guard.check_single_model(good, chain=[{"provider": "gemini",
+                                                   "model": "gemini-3.5-flash-lite"}]),
+            mentioning="gemini/gemini-3.5-flash-lite")
+    refuses("an OpenRouter fallback tier",
+            guard.check_single_model(good, chain=[{"provider": "openrouter", "model": "x:free"}]),
+            mentioning="openrouter")
+    refuses("a different primary model",
+            guard.check_single_model({"model": {"provider": "custom:deepseek_api",
+                                                "default": "deepseek-v4-pro"}}, chain=[]),
+            mentioning="deepseek-v4-pro")
+    refuses("a different primary provider",
+            guard.check_single_model({"model": {"provider": "gemini",
+                                                "default": "deepseek-flash"}}, chain=[]),
+            mentioning="gemini")
+    source = (REPO / "hermes" / "check_telegram_surface.py").read_text(encoding="utf-8")
+    check("condition 9 asks Hermes' own fallback merge (both config keys)",
+          "get_fallback_chain(cfg)" in source and '("single model"' in source,
+          "condition 9 is not wired into check() or reads only one key")
+
+
 def test_every_guarded_surface_is_checked() -> None:
     """The cron surface was wide open while the guard watched only telegram.
 
@@ -596,6 +628,7 @@ def main() -> int:
                  test_write_approval_armed,
                  test_annotations_match_the_manifest,
                  test_gate_sees_annotations,
+                 test_single_model,
                  test_every_guarded_surface_is_checked,
                  test_mcp_approval_is_per_call,
                  test_unreadable_manifest_fails_closed,

@@ -24,11 +24,11 @@ because it imports Hermes' resolver rather than reimplementing it. A
 reimplementation would drift from the thing it is checking, which is how the
 original defect survived: two descriptions of the same surface, never compared.
 
-THE EIGHT CONDITIONS
---------------------
+THE NINE CONDITIONS
+-------------------
 One tool-surface check was not enough, because the surface is only one of the
 things that has to hold before the gateway is allowed to talk to Telegram. All
-eight fail CLOSED, and a check that raises counts as failed:
+nine fail CLOSED, and a check that raises counts as failed:
 
   1. tool surface      nothing outside the manifest is on the wire
   2. approval patch    reading the Hermes secret store still asks
@@ -40,6 +40,8 @@ eight fail CLOSED, and a check that raises counts as failed:
                        per-tool gate stops a write before its RPC is sent
   8. gate sees hints   what Hermes COMPUTED about each tool's readOnlyHint
                        matches the manifest -- the comparison that was missing
+  9. single model      Hermes' chain is deepseek-flash alone: Hermes' own
+                       get_fallback_chain() is empty (2026-10-02 decision)
 
 4 compares a SHA-256, not the ID. The ID is the entire authentication boundary
 and this file is in a repository; a digest pins the value without publishing it,
@@ -156,7 +158,7 @@ def digest(value: str) -> str:
 
 
 # --------------------------------------------------------------------------
-# the eight checks -- each pure enough to be called with doctored input
+# the nine checks -- each pure enough to be called with doctored input
 # --------------------------------------------------------------------------
 
 def resolve_telegram_tools(cfg, platform: str = PLATFORM):
@@ -382,6 +384,30 @@ def check_gate_sees_annotations(manifest, hints=None) -> tuple[bool, str]:
     return True, f"{checked} cached annotation(s) agree with the manifest"
 
 
+def check_single_model(cfg, chain=None) -> tuple[bool, str]:
+    """9. Hermes runs on one model, and no fallback has crept back.
+
+    A DeepSeek outage must stop Hermes, not hand the conversation to a free
+    tier that behaves differently. Uses Hermes' OWN merge of fallback_providers
+    and the legacy fallback_model, so a fallback added under either key fails.
+    The expected provider and model come from configure_providers.py, the one
+    place that writes them.
+    """
+    from configure_providers import HERMES_MODEL, PROVIDER
+    if chain is None:
+        from hermes_cli.fallback_config import get_fallback_chain
+        chain = get_fallback_chain(cfg)
+    model = cfg.get("model") or {}
+    if (model.get("provider"), model.get("default")) != (PROVIDER, HERMES_MODEL):
+        return False, (f"primary is {model.get('provider')}/{model.get('default')}, "
+                       f"expected {PROVIDER}/{HERMES_MODEL}")
+    if chain:
+        tiers = ", ".join(f"{t.get('provider')}/{t.get('model')}" for t in chain)
+        return False, (f"a fallback chain is configured ({tiers}); Hermes must run "
+                       f"on {HERMES_MODEL} alone. Run hermes/configure_providers.py restore.")
+    return True, f"{PROVIDER}/{HERMES_MODEL}, no fallback"
+
+
 def check_mcp_includes(cfg, manifest) -> tuple[bool, str]:
     """5. config.yaml's include lists and the manifest say the same thing.
 
@@ -445,6 +471,7 @@ def check():
         ("mcp include lists", lambda: check_mcp_includes(cfg, manifest)),
         ("write approval armed", lambda: check_write_approval_armed(cfg, manifest)),
         ("gate sees annotations", lambda: check_gate_sees_annotations(manifest)),
+        ("single model", lambda: check_single_model(cfg)),
     ]
 
     failures, notes = [], []

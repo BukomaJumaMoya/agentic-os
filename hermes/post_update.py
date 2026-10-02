@@ -21,11 +21,11 @@ WHAT IT RUNS, IN THIS ORDER
 ---------------------------
   1. configure_orchestrator.py    the three MCP servers and their include lists
   2. harden_telegram_surface.py   the Telegram allowlist + the in-process guard
-  3. configure_providers.py restore  the model chain, and the reasoning-effort trap
+  3. configure_providers.py restore  single-model chain, checked against GET /models
   4. apply_approval_patch.py      secret-store reads require approval again
   5. patch_readonly_hint.py       Hermes reads readOnlyHint at all (see its docstring)
   6. gateway_launcher.py --install  the task reaches the guard; policy reported
-  7. check_telegram_surface.py    all eight conditions, under Hermes' interpreter
+  7. check_telegram_surface.py    all nine conditions, under Hermes' interpreter
   8. tests/test_surface_guard.py  the negative tests -- proof it still REFUSES
 
 7 before 8 on purpose. 7 says the machine is currently in the right state; 8
@@ -73,7 +73,7 @@ def steps() -> list[tuple]:
          REPO / "hermes" / "configure_orchestrator.py", [], agent, None, True),
         ("Telegram surface + in-process guard",
          REPO / "hermes" / "harden_telegram_surface.py", [], agent, None, True),
-        ("model chain",
+        ("model chain (deepseek-flash alone)",
          REPO / "hermes" / "configure_providers.py", ["restore"], agent, None, True),
         ("approval patch",
          REPO / "hermes" / "apply_approval_patch.py", [], agent, None, True),
@@ -83,7 +83,7 @@ def steps() -> list[tuple]:
          REPO / "hermes" / "patch_elicitation_percall.py", [], agent, None, True),
         ("gateway launcher + task policy",
          REPO / "hermes" / "gateway_launcher.py", ["--install"], agent, None, False),
-        ("startup guard (all eight conditions)",
+        ("startup guard (all nine conditions)",
          REPO / "hermes" / "check_telegram_surface.py", [], hermes, checkout, True),
         ("guard negative tests",
          REPO / "tests" / "test_surface_guard.py", [], agent, None, True),
@@ -139,7 +139,7 @@ def main() -> int:
               "guard will refuse anyway, and now it will say so over Telegram.")
         return 1
 
-    print("\nPASS -- every patch re-applied, all eight guard conditions hold, "
+    print("\nPASS -- every patch re-applied, all nine guard conditions hold, "
           "and the guard still refuses each of them when broken.")
     print("Restart the gateway to pick this up: hermes gateway restart")
     return 0

@@ -309,7 +309,7 @@ def loop(boot, downstream: "Downstream", *, system: str, instruction: str,
     # is fenced but authoritative; otherwise it is material to answer about.
     # Getting this wrong is not a subtle failure: an action tool given the
     # read framing refuses every write it is asked for. See guard.py.
-    wrap = guard.task_block if task else guard.instruction_block
+    wrap = guard.task_block if task else guard.question_block
     messages: list[dict] = [{"role": "user", "content": wrap(instruction)}]
     performed: list[dict] = []
     # Tools that may be called at most once per invocation, enforced HERE

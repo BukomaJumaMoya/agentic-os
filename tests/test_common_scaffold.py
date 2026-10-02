@@ -399,6 +399,21 @@ def test_task_framing_lets_action_tools_act() -> None:
     check("pm_action passes task=True",
           "task=True" in pm, "pm_action still sends its instruction as untrusted")
 
+    # The read side: W2's cron question was refused as "untrusted input".
+    q = guard.question_block("Which tasks are due today or overdue?")
+    check("question block is labelled a question, not untrusted input",
+          q.startswith("BEGIN QUESTION-") and "UNTRUSTED" not in q, q[:120])
+    check("read rule makes the QUESTION authoritative",
+          "QUESTION block is what the operator asked" in guard.AUTHORITY_RULE,
+          guard.AUTHORITY_RULE[:200])
+    check("read rule keeps quoted text and tool results as data",
+          "QUOTES" in guard.AUTHORITY_RULE and "every tool result" in guard.AUTHORITY_RULE,
+          "quoted/tool text lost its data framing")
+    mcp = (REPO / "agents" / "_common" / "mcp_client.py").read_text(encoding="utf-8")
+    check("pm and mcp loops send read questions as QUESTION",
+          "else guard.question_block" in pm and "else guard.question_block" in mcp,
+          "a read tool still frames its question as untrusted")
+
     coding = (REPO / "agents" / "coding" / "main.py").read_text(encoding="utf-8")
     check("github_action uses the task rule and passes task=True",
           "GITHUB_ACTION_SYSTEM = f\"\"\"" in coding

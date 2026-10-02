@@ -258,7 +258,7 @@ def plan_queries(boot, question: str, max_queries: int) -> list[str]:
                     "queries covering its distinct angles. Reply with JSON: "
                     '{"queries": ["...", "..."]}. Queries are keyword phrases, '
                     "not sentences. " + guard.AUTHORITY_RULE),
-            user=guard.instruction_block(question),
+            user=guard.question_block(question),
             max_tokens=300, temperature=0.3, json_mode=True,
         )
         parsed = parse_json_reply(reply["text"])
@@ -279,7 +279,7 @@ def summarise(boot, question: str, sources: list[dict]) -> dict:
         for n, item in enumerate(sources, 1)
     )
     user = (
-        f"QUESTION\n{guard.instruction_block(question)}\n\n"
+        f"QUESTION\n{guard.question_block(question)}\n\n"
         f"SOURCES ({len(sources)})\n{numbered}"
     )
     reply = boot.llm.complete(system=SUMMARISE_SYSTEM, user=user,
