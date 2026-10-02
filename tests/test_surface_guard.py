@@ -543,6 +543,20 @@ def test_single_model() -> None:
             guard.check_single_model({"model": {"provider": "gemini",
                                                 "default": "deepseek-flash"}}, chain=[]),
             mentioning="gemini")
+    # The gateway imports the guard by file path, without hermes/ on sys.path.
+    # Condition 9 raised ModuleNotFoundError there and refused a real start.
+    import subprocess  # noqa: PLC0415
+    probe = (
+        "import importlib.util\n"
+        f"spec = importlib.util.spec_from_file_location('g', r'{REPO / 'hermes' / 'check_telegram_surface.py'}')\n"
+        "g = importlib.util.module_from_spec(spec); spec.loader.exec_module(g)\n"
+        "print(g.check_single_model({'model': {'provider': 'custom:deepseek_api', "
+        "'default': 'deepseek-flash'}}, chain=[])[0])\n")
+    done = subprocess.run([sys.executable, "-I", "-c", probe], capture_output=True,
+                          text=True, cwd=tempfile.gettempdir(), timeout=60)
+    check("condition 9 works when imported without hermes/ on sys.path",
+          done.stdout.strip() == "True", (done.stdout + done.stderr)[-300:])
+
     source = (REPO / "hermes" / "check_telegram_surface.py").read_text(encoding="utf-8")
     check("condition 9 asks Hermes' own fallback merge (both config keys)",
           "get_fallback_chain(cfg)" in source and '("single model"' in source,

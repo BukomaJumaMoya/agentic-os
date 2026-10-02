@@ -393,6 +393,10 @@ def check_single_model(cfg, chain=None) -> tuple[bool, str]:
     The expected provider and model come from configure_providers.py, the one
     place that writes them.
     """
+    # The gateway's in-process guard imports this module without hermes/ on
+    # sys.path; a bare import raised there and refused the start (2026-10-02).
+    if str(MANIFEST_PATH.parent) not in sys.path:
+        sys.path.insert(0, str(MANIFEST_PATH.parent))
     from configure_providers import HERMES_MODEL, PROVIDER
     if chain is None:
         from hermes_cli.fallback_config import get_fallback_chain
