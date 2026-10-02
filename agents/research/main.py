@@ -75,7 +75,8 @@ USER_AGENT = f"juma-freelance-ai-{AGENT}/{VERSION}"
 # The complete list of hosts this agent may contact. Enforced in _post below
 # rather than merely documented, because "no other network targets" is a claim
 # that should be checkable by reading one function.
-ALLOWED_HOSTS = {"api.tavily.com", "api.groq.com", "openrouter.ai"}
+ALLOWED_HOSTS = {"api.tavily.com", "api.groq.com", "openrouter.ai",
+                 "generativelanguage.googleapis.com"}
 
 MAX_RESULTS_CEILING = 20
 # The cap the previous fetch_page applied, for the same reason: an unbounded

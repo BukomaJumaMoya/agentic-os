@@ -425,11 +425,38 @@ def _throwaway_audit() -> audit_mod.Audit:
     return audit_mod.Audit("testagent", log_dir=Path(tempfile.mkdtemp()))
 
 
+def test_gemini_skipped_for_foreign_tool_calls() -> None:
+    """Gemini 3 400s on tool calls it did not sign. Once another limb served a
+    loop step, Gemini must be skipped, not sent a guaranteed refusal."""
+    from _common.llm import LLM  # noqa: PLC0415
+    served: list[str] = []
+
+    class Probe(LLM):
+        def _call(self, provider, model, *_args):
+            served.append(provider.name)
+            return {"text": "ok", "tool_calls": [], "model": model}
+
+    llm = Probe(agent="t", gemini_key="g", gemini_models=["gm"],
+                groq_key="q", groq_models=["qm"])
+    llm.complete("s", "", messages=[{"role": "user", "content": "x"}])
+    check("a fresh loop goes to Gemini first", served == ["gemini"], str(served))
+    served.clear()
+    llm.complete("s", "", messages=[{"role": "assistant", "content": "",
+                                     "tool_calls": [{"id": "1", "function": {}}]}])
+    check("a loop holding unsigned tool calls skips Gemini", served == ["groq"], str(served))
+    served.clear()
+    llm.complete("s", "", messages=[{"role": "assistant", "content": "",
+                                     "tool_calls": [{"id": "1", "function": {},
+                                                     "extra_content": {}}]}])
+    check("a Gemini-signed loop stays on Gemini", served == ["gemini"], str(served))
+
+
 def main() -> int:
     for func in (test_env_scrub, test_env_parse_and_required, test_redaction,
                  test_guarded_never_raises, test_confinement, test_guard,
                  test_jobs, test_audit_redacts,
-                 test_task_framing_lets_action_tools_act):
+                 test_task_framing_lets_action_tools_act,
+                 test_gemini_skipped_for_foreign_tool_calls):
         func()
 
     for name in PASSED:

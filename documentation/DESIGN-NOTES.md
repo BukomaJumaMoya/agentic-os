@@ -670,3 +670,30 @@ a list that only ever grows stops being read.
 | Windows Event Log alerts were not written | source `Hermes_Gateway` exists; 100 pass, 101 refusal |
 | Kolaborate MCP not wired | wired read-only behind `kola_agent`, returning real marketplace data, with the **inner** operation allowlisted |
 | CI had never passed | `quality` is green. Four separate causes, recorded in `documentation/STATUS.md` |
+
+## Model placement, 2026-10-02: why pm and research stay direct calls
+
+**pm and research run on `gemini-3.8-flash`** (confirmed against Gemini's
+`GET /v1beta/models`), called directly through `agents/_common/llm.py`.
+Groq and OpenRouter stay behind it, and every fallthrough is written to the
+audit log as `llm_fallthrough`.
+
+**Research does not get Antigravity or any other agentic executor.** It reads
+untrusted web content by design. Prompt injection is harmless there for one
+reason only: the research agent has no write capability. It has no shell, no
+files and no credentials beyond its search key. An executor behind it would
+give injected text a pair of hands. Zero-write is the control, and it is not
+traded for capability.
+
+**pm does not move onto Pi.** Pi's default tools include unrestricted bash,
+and this process holds the ClickUp token. Putting Pi here would need what
+coding already has: its own container with only the project mounted, an
+environment built from nothing (only the model key, never `CLICKUP_TOKEN`),
+and ClickUp reached through a narrow tool outside the sandbox rather than a
+token inside it. Until that exists, pm stays a direct API call.
+
+**coding: Pi on `deepseek-flash`** through Pi's built-in `deepseek` provider,
+which calls `api.deepseek.com` directly with `DEEPSEEK_API_KEY`, not
+OpenRouter's `deepseek/` route. Confirmed after the change: the container
+receives only its own key, a project `.env` reads as 0 bytes, and the only
+host mount is `/work`.

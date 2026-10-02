@@ -105,8 +105,10 @@ def bootstrap(*, agent: str, version: str, instructions: str,
     # extra Groq models tried before the chain moves to OpenRouter.
     model_var = f"{agent.upper()}_MODEL"
     openrouter_var = f"{agent.upper()}_OPENROUTER_MODEL"
-    for name in (model_var, openrouter_var, "FALLBACK_MODELS",
-                 "GROQ_API_KEY", "OPENROUTER_API_KEY"):
+    # <AGENT>_GEMINI_MODEL + GEMINI_API_KEY: a direct Gemini call, tried first.
+    gemini_var = f"{agent.upper()}_GEMINI_MODEL"
+    for name in (model_var, openrouter_var, gemini_var, "FALLBACK_MODELS",
+                 "GROQ_API_KEY", "OPENROUTER_API_KEY", "GEMINI_API_KEY"):
         if name not in optional and name not in (required or []):
             optional.append(name)
 
@@ -143,6 +145,8 @@ def bootstrap(*, agent: str, version: str, instructions: str,
             groq_models=groq_models,
             openrouter_key=config.get("OPENROUTER_API_KEY", ""),
             openrouter_models=openrouter_models,
+            gemini_key=config.get("GEMINI_API_KEY", ""),
+            gemini_models=_csv(config.get(gemini_var, "")),
             audit=log,
         )
         log.write("llm_configured", chain=llm.models)

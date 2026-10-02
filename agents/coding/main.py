@@ -893,7 +893,7 @@ def main() -> None:
             version=VERSION,
             instructions=INSTRUCTIONS,
             required=[],
-            optional=["GROQ_API_KEY", "OPENROUTER_API_KEY", "CODING_ROOT",
+            optional=["GROQ_API_KEY", "OPENROUTER_API_KEY", "DEEPSEEK_API_KEY", "CODING_ROOT",
                       "CODING_SANDBOX", "CODING_ALLOW_UNMASKED_ENV",
                       "CODING_PROVIDER", "CODING_TOKEN_TOOLS", "GITHUB_TOKEN"],
             default_model="openai/gpt-oss-120b",
@@ -918,21 +918,29 @@ def main() -> None:
     dev_root = Path(boot.config.get("CODING_ROOT")
                     or r"D:\Bukoma Juma Moya\Dev").resolve()
     model = boot.config.get("CODING_MODEL") or "poolside/laguna-s-2.1:free"
-    # Pi gets ONE provider and ONE key. Groq is preferred because
-    # OpenRouter's free tier is capped per day, account-wide, and a coding task
-    # is the most model-hungry thing here.
+    # Pi gets ONE provider and ONE key, and only that key enters the sandbox.
+    # DeepSeek direct is the primary (2026-10-02): Pi's built-in `deepseek`
+    # provider calls api.deepseek.com with DEEPSEEK_API_KEY -- not OpenRouter's
+    # deepseek/ route. Groq, then OpenRouter, only when no DeepSeek key is set.
+    deepseek_key = (boot.config.get("DEEPSEEK_API_KEY") or "").strip()
     groq_key = (boot.config.get("GROQ_API_KEY") or "").strip()
     openrouter_key = (boot.config.get("OPENROUTER_API_KEY") or "").strip()
     forced_provider = (boot.config.get("CODING_PROVIDER") or "").strip().lower()
 
-    if forced_provider == "openrouter" or (not groq_key and openrouter_key):
+    if forced_provider == "deepseek" or (not forced_provider and deepseek_key):
+        if not deepseek_key:
+            fatal(AGENT, RuntimeError("CODING_PROVIDER=deepseek but DEEPSEEK_API_KEY "
+                                      "is not set in agents/coding/.env"))
+            return
+        pi_provider, pi_key, pi_key_var = "deepseek", deepseek_key, "DEEPSEEK_API_KEY"
+    elif forced_provider == "openrouter" or (not groq_key and openrouter_key):
         pi_provider, pi_key, pi_key_var = "openrouter", openrouter_key, "OPENROUTER_API_KEY"
     elif groq_key:
         pi_provider, pi_key, pi_key_var = "groq", groq_key, "GROQ_API_KEY"
     else:
         fatal(AGENT, RuntimeError(
-            "no model provider configured: set GROQ_API_KEY or "
-            "OPENROUTER_API_KEY in agents/coding/.env"))
+            "no model provider configured: set DEEPSEEK_API_KEY, GROQ_API_KEY "
+            "or OPENROUTER_API_KEY in agents/coding/.env"))
         return
 
     forced = (boot.config.get("CODING_SANDBOX") or "auto").strip().lower()

@@ -68,7 +68,8 @@ AGENT = "pm"
 VERSION = "3.0.0"
 
 BASE = "https://api.clickup.com/api/v2"
-ALLOWED_HOSTS = {"api.clickup.com", "api.groq.com", "openrouter.ai"}
+ALLOWED_HOSTS = {"api.clickup.com", "api.groq.com", "openrouter.ai",
+                 "generativelanguage.googleapis.com"}
 TIMEOUT = 20
 
 # ClickUp ids are opaque alphanumeric strings; custom ids add - and _.

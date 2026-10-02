@@ -194,6 +194,11 @@ def test_scrubbed_env_is_built_from_nothing() -> None:
           or_env.get("OPENROUTER_API_KEY") == "sk-or-v1-thekey"
           and "GROQ_API_KEY" not in or_env, str(sorted(or_env)))
 
+    ds_env = coding.scrubbed_env("sk-thedeepseekkey", "DEEPSEEK_API_KEY")
+    check("the DeepSeek limb passes only its own key",
+          ds_env.get("DEEPSEEK_API_KEY") == "sk-thedeepseekkey"
+          and not {"GROQ_API_KEY", "OPENROUTER_API_KEY"} & set(ds_env), str(sorted(ds_env)))
+
     for name in ("CLICKUP_TOKEN", "TELEGRAM_BOT_TOKEN", "TAVILY_API_KEY"):
         check(f"Pi does not receive {name}", name not in env, f"{name} leaked")
     check("no value in Pi's environment contains another agent's secret",

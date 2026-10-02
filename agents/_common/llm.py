@@ -1,5 +1,15 @@
 #!/usr/bin/env python3
-"""Model access for agents: Groq first, OpenRouter second.
+"""Model access for agents: Gemini (when configured), then Groq, then OpenRouter.
+
+2026-10-02: pm and research run on Gemini 3.8 Flash
+---------------------------------------------------
+`<AGENT>_GEMINI_MODEL` plus GEMINI_API_KEY puts a direct Gemini call FIRST,
+through Google's OpenAI-compatible endpoint, so it is the same request shape as
+the other two limbs and nothing else in this file changes. The model id is
+checked against GET /v1beta/models when it is configured, not taken from a
+name. An agent without those two variables is unchanged. Groq and OpenRouter
+stay behind it, and any fallthrough is recorded (llm_fallthrough), so a
+degraded answer is visible in the audit log rather than silent.
 
 WHY THE CHAIN CAME BACK
 -----------------------
@@ -15,9 +25,8 @@ So the chain is back, with two limbs instead of the original three:
     1. Groq        (GROQ_API_KEY)        primary -- fast, generous free tier
     2. OpenRouter  (OPENROUTER_API_KEY)  fallback
 
-Gemini stays gone. It was dropped for a reason that still holds: a third
-credential in every agent's .env buys a fallback that the first two already
-cover between them.
+Gemini was dropped once as a third credential that bought nothing; it came
+back as a primary, not as a fallback (see the top of this docstring).
 
 A provider with no key is skipped silently, so a machine holding one key works
 exactly as well as a machine holding two. Only an empty chain is an error.
@@ -73,6 +82,7 @@ from typing import Any
 
 from .errors import AgentError
 
+GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
 GROQ_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
 OPENROUTER_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
 
@@ -122,12 +132,16 @@ class LLM:
 
     def __init__(self, *, agent: str, groq_key: str = "", groq_models: list[str] | None = None,
                  openrouter_key: str = "", openrouter_models: list[str] | None = None,
+                 gemini_key: str = "", gemini_models: list[str] | None = None,
                  timeout: int = DEFAULT_TIMEOUT, audit=None):
         self.agent = agent
         self.timeout = timeout
         self.audit = audit
         self.providers: list[Provider] = []
 
+        if (gemini_key or "").strip() and gemini_models:
+            self.providers.append(Provider(
+                "gemini", GEMINI_ENDPOINT, gemini_key.strip(), list(gemini_models)))
         if (groq_key or "").strip() and groq_models:
             self.providers.append(Provider(
                 "groq", GROQ_ENDPOINT, groq_key.strip(), list(groq_models)))
@@ -144,7 +158,7 @@ class LLM:
             raise AgentError(
                 "missing_key",
                 "no model provider is configured for this agent. Set "
-                "GROQ_API_KEY (with a GROQ model) or OPENROUTER_API_KEY (with "
+                "GEMINI_API_KEY (with <AGENT>_GEMINI_MODEL), GROQ_API_KEY (with a GROQ model) or OPENROUTER_API_KEY (with "
                 "an OpenRouter model) in this agent's .env.",
             )
 
@@ -172,7 +186,21 @@ class LLM:
         else:
             convo = [{"role": "system", "content": system}] + list(messages)
 
+        # Gemini 3 rejects (HTTP 400, "missing a thought_signature") a
+        # conversation holding tool calls it did not sign -- i.e. once another
+        # limb has served a step of the loop. Skip it then, rather than spend a
+        # request on a guaranteed refusal.
+        foreign_calls = any(
+            "extra_content" not in (call or {})
+            for m in convo if m.get("role") == "assistant"
+            for call in (m.get("tool_calls") or []))
+
         for provider in self.providers:
+            if provider.name == "gemini" and foreign_calls:
+                attempts.append({"provider": "gemini", "model": ",".join(provider.models),
+                                 "outcome": "skipped",
+                                 "reason": "conversation holds tool calls from another provider"})
+                continue
             for model in provider.models:
                 try:
                     result = self._call(provider, model, convo, max_tokens,
