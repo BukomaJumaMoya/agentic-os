@@ -115,9 +115,10 @@ silently not existing. The script re-applies everything and then proves it:
 4. approval patch — secret-store reads require approval
 5. `readOnlyHint` alias patch — without it every read tool is gated
 6. elicitation per-call patch — without it Telegram offers "Always Allow"
-7. gateway launcher + scheduled-task policy
-8. the startup guard, all nine conditions (9: no fallback chain)
-9. the guard's negative tests
+7. desktop single-model patch — without it the desktop composer can pick any provider
+8. gateway launcher + scheduled-task policy
+9. the startup guard, all nine conditions (9: no fallback chain)
+10. the guard's negative tests
 
 Anything but `PASS` at the end means do not start the gateway.
 
@@ -298,6 +299,20 @@ the model. Startup guard condition 9 refuses to start the gateway if Hermes'
 own merged fallback chain is non-empty. The paused client-engine cron jobs keep
 their own per-job Gemini setting, which is not this chain.
 
+**The desktop app follows the same rule (2026-10-02).** Condition 9 only runs
+when the gateway starts, and the desktop composer keeps its own per-session
+model pick in the app's localStorage, which bypasses `config.yaml`. That is how
+desktop turns went to OpenRouter and Nous that morning. The patch
+`hermes/patch_desktop_single_model.py` adds a check at the only two places a
+desktop session gets a model: building the agent, and a live switch (picker or
+`/model`). Anything but `config.yaml`'s `model.provider`/`model.default`, or
+any configured fallback, is refused with a message naming the mismatch.
+`post_update.py` re-applies it after every `hermes update`. If an update moves
+either anchor, the step FAILs ("anchor not found"); it never half-applies. The
+patched code loads when the desktop app next starts. One gap remains: a
+fallback added to `config.yaml` while a desktop chat is already open is
+adopted by that chat without a rebuild; the next session is refused.
+
 Groq stays out of Hermes' chain: its 8,000 tokens/minute cannot fit one routing
 turn. It still serves the agents, from their own `.env` files.
 
@@ -305,23 +320,31 @@ turn. It still serves the agents, from their own `.env` files.
 
 | agent | executor | model (checked against `/models`, 2026-10-02) | behind it |
 |---|---|---|---|
-| pm | direct API call (`_common/llm.py`) | Gemini `gemini-3.8-flash` | Groq `openai/gpt-oss-120b`, then OpenRouter |
-| research | direct API call (`_common/llm.py`) | Gemini `gemini-3.8-flash` | Groq `openai/gpt-oss-120b`, then OpenRouter |
+| pm | direct API call (`_common/llm.py`) | Gemini `gemini-3.5-flash` | Groq `openai/gpt-oss-120b`, then OpenRouter |
+| research | direct API call (`_common/llm.py`) | Gemini `gemini-3.5-flash` | Groq `openai/gpt-oss-120b`, then OpenRouter (**dead, see below**) |
 | coding (tasks) | Pi in the Docker sandbox | DeepSeek `deepseek-flash`, direct to `api.deepseek.com` | none: Pi gets one provider and one key |
 | coding (`github_query`, `docs_query`), docs, kola, n8n | direct API call | Groq `openai/gpt-oss-120b` | OpenRouter |
 
-One real run each, 2026-10-02:
+Three real calls per agent on `gemini-3.5-flash`, 2026-10-02 (provider of each
+model call, in order):
 
-| run | wall time | tokens | served by | cost |
-|---|---|---|---|---|
-| research, quick | 4.7 s | 2,185 in / 227 out | Gemini | free tier |
-| pm_query, W2 question | 8–13 s | ~900 in / 10 out (Gemini step) + ~2,500 in / ~640 out (Groq step) | Gemini, then Groq after a 503 | free tiers |
-| coding task (hello.py) | 12.7 s | 723 in + 12,288 cache read / 177 out, 3 calls | DeepSeek | ~$0.00025 off-peak |
+| run | wall time | calls | answered by |
+|---|---|---|---|
+| pm #1 | 14.4 s | gemini ok, gemini 503, groq ok | Groq |
+| pm #2 | 20.1 s | gemini ok, gemini ok | Gemini |
+| pm #3 | 56.8 s | gemini ok ×4 | Gemini |
+| research #1 | 107.6 s | gemini 503, groq timeout, openrouter 404 | **failed** |
+| research #2 | 98.8 s | gemini 90 s timeout, groq ok | Groq |
+| research #3 | 15.5 s | gemini ok | Gemini |
 
-**Gemini 3.8 Flash was overloaded while this was measured**: about 7 of 9 calls
-got HTTP 503 "high demand". pm and research still answered because Groq is
-behind Gemini, and each fallthrough is in the agent's audit log as
-`llm_fallthrough`. With Gemini alone they would have failed most calls that day.
+Gemini 3.5 Flash failed 3 of its 12 calls (two 503 "high demand", one
+90-second timeout). That is better than 3.8 Flash, which failed about 7 of 9,
+but it is not stable. Research's last resort is gone:
+`nex-agi/nex-n2.5-pro:free` now returns 404 ("unavailable for free"), which
+is why research #1 failed outright.
+
+Coding, one run: 12.7 s, 3 model calls, 723 uncached + 12,288 cache-read input
+and 177 output tokens on `deepseek-flash`, about $0.00025 off-peak.
 
 To change an agent's model: `<AGENT>_GEMINI_MODEL` (Gemini, tried first),
 `<AGENT>_MODEL` (Groq), `<AGENT>_OPENROUTER_MODEL` in that agent's `.env`. For

@@ -180,23 +180,31 @@ The agents choose their own models:
 
 | agent | executor | model (checked against `/models`, 2026-10-02) | behind it |
 |---|---|---|---|
-| pm | direct API call (`_common/llm.py`) | Gemini `gemini-3.8-flash` | Groq `openai/gpt-oss-120b`, then OpenRouter |
-| research | direct API call (`_common/llm.py`) | Gemini `gemini-3.8-flash` | Groq `openai/gpt-oss-120b`, then OpenRouter |
+| pm | direct API call (`_common/llm.py`) | Gemini `gemini-3.5-flash` | Groq `openai/gpt-oss-120b`, then OpenRouter |
+| research | direct API call (`_common/llm.py`) | Gemini `gemini-3.5-flash` | Groq `openai/gpt-oss-120b`, then OpenRouter (**dead, see below**) |
 | coding (tasks) | Pi in the Docker sandbox | DeepSeek `deepseek-flash`, direct to `api.deepseek.com` | none: Pi gets one provider and one key |
 | coding (`github_query`, `docs_query`), docs, kola, n8n | direct API call | Groq `openai/gpt-oss-120b` | OpenRouter |
 
-One real run each, 2026-10-02:
+Three real calls per agent on `gemini-3.5-flash`, 2026-10-02 (provider of each
+model call, in order):
 
-| run | wall time | tokens | served by | cost |
-|---|---|---|---|---|
-| research, quick | 4.7 s | 2,185 in / 227 out | Gemini | free tier |
-| pm_query, W2 question | 8–13 s | ~900 in / 10 out (Gemini step) + ~2,500 in / ~640 out (Groq step) | Gemini, then Groq after a 503 | free tiers |
-| coding task (hello.py) | 12.7 s | 723 in + 12,288 cache read / 177 out, 3 calls | DeepSeek | ~$0.00025 off-peak |
+| run | wall time | calls | answered by |
+|---|---|---|---|
+| pm #1 | 14.4 s | gemini ok, gemini 503, groq ok | Groq |
+| pm #2 | 20.1 s | gemini ok, gemini ok | Gemini |
+| pm #3 | 56.8 s | gemini ok ×4 | Gemini |
+| research #1 | 107.6 s | gemini 503, groq timeout, openrouter 404 | **failed** |
+| research #2 | 98.8 s | gemini 90 s timeout, groq ok | Groq |
+| research #3 | 15.5 s | gemini ok | Gemini |
 
-**Gemini 3.8 Flash was overloaded while this was measured**: about 7 of 9 calls
-got HTTP 503 "high demand". pm and research still answered because Groq is
-behind Gemini, and each fallthrough is in the agent's audit log as
-`llm_fallthrough`. With Gemini alone they would have failed most calls that day.
+Gemini 3.5 Flash failed 3 of its 12 calls (two 503 "high demand", one
+90-second timeout). That is better than 3.8 Flash, which failed about 7 of 9,
+but it is not stable. Research's last resort is gone:
+`nex-agi/nex-n2.5-pro:free` now returns 404 ("unavailable for free"), which
+is why research #1 failed outright.
+
+Coding, one run: 12.7 s, 3 model calls, 723 uncached + 12,288 cache-read input
+and 177 output tokens on `deepseek-flash`, about $0.00025 off-peak.
 
 Measured through `tools/logging_proxy.py`, three routing turns on the Telegram
 surface: **about $0.001 a turn off-peak, $0.002 at peak** (2–3 calls, ~9–11k

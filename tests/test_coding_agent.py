@@ -268,6 +268,25 @@ def test_env_file_classification() -> None:
               f"{name} would be masked")
 
 
+def _own_project(tag: str) -> Path:
+    """A fresh directory directly under the dev root, inside no repository.
+
+    Tests used to work in DEV_ROOT/scratch/..., and scratch/ is itself a git
+    repo, so every run branched and switched someone else's repository.
+    """
+    return Path(tempfile.mkdtemp(prefix=f".agent-{tag}-", dir=DEV_ROOT))
+
+
+def _rmtree_readonly(path: Path) -> None:
+    """git marks object files read-only; on Windows rmtree needs them made writable."""
+    import stat  # noqa: PLC0415
+
+    def unlock(func, target, _exc):
+        os.chmod(target, stat.S_IWRITE)
+        func(target)
+    shutil.rmtree(path, onerror=unlock)
+
+
 def test_env_is_unreadable_inside_the_sandbox() -> None:
     """The real proof: run the actual container and try to read the secrets.
 
@@ -285,8 +304,7 @@ def test_env_is_unreadable_inside_the_sandbox() -> None:
         print("  SKIP  sandbox masking test: Docker image not available")
         return
 
-    project = DEV_ROOT / "scratch" / "agent-test-envmask"
-    shutil.rmtree(project, ignore_errors=True)
+    project = _own_project("envmask")
     (project / "config").mkdir(parents=True)
     secret = "SUPER_SECRET_VALUE_SHOULD_NEVER_BE_READABLE"
     (project / ".env").write_text(f"API_KEY={secret}\n", encoding="utf-8")
@@ -329,7 +347,7 @@ def test_env_is_unreadable_inside_the_sandbox() -> None:
               sorted(masked) == [".env", ".env.production", "config/.env.local"],
               str(masked))
     finally:
-        shutil.rmtree(project, ignore_errors=True)
+        _rmtree_readonly(project)
 
 
 def test_server_tools() -> None:
@@ -394,7 +412,14 @@ def test_frontend_reports_not_configured() -> None:
     if shutil.which("agy"):
         print("  SKIP  frontend not-configured test: agy IS installed")
         return
-    scratch = DEV_ROOT / "scratch" / "agent-test-frontend"
+    scratch = _own_project("frontend")
+    try:
+        _run_frontend(scratch)
+    finally:
+        _rmtree_readonly(scratch)
+
+
+def _run_frontend(scratch: Path) -> None:
     with MCPStdioClient([PY, AGENT_PATH], timeout=180) as client:
         started = client.call("start_code_task", {
             "project_path": str(scratch),
@@ -416,12 +441,29 @@ def test_frontend_reports_not_configured() -> None:
           "not installed" in (result.get("detail") or "")
           or "authenticat" in (result.get("detail") or ""),
           str(result)[:300])
-    shutil.rmtree(scratch, ignore_errors=True)
 
 
 def test_live() -> None:
-    scratch = DEV_ROOT / "scratch" / "agent-hello"
-    shutil.rmtree(scratch, ignore_errors=True)
+    # The fixture owns its project. It used to reuse DEV_ROOT/scratch/agent-hello,
+    # and scratch/ had itself become a git repo (2026-09-22), so the new project
+    # was one untracked folder in someone else's repo and hello.py never showed
+    # up as a changed file. A fresh directory directly under the dev root, which
+    # is inside no repository, makes the result independent of the disk's state.
+    scratch = _own_project("livetest")
+    enclosing = subprocess.run(["git", "-C", str(scratch), "rev-parse", "--show-toplevel"],
+                               capture_output=True, text=True)
+    if enclosing.returncode == 0:
+        check("live fixture is outside any existing repo", False,
+              f"{scratch} is inside {enclosing.stdout.strip()}")
+        _rmtree_readonly(scratch)
+        return
+    try:
+        _run_live(scratch)
+    finally:
+        _rmtree_readonly(scratch)
+
+
+def _run_live(scratch: Path) -> None:
     with MCPStdioClient([PY, AGENT_PATH], timeout=900) as client:
         started = client.call("start_code_task", {
             "project_path": str(scratch),

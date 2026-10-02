@@ -24,6 +24,7 @@ WHAT IT RUNS, IN THIS ORDER
   3. configure_providers.py restore  single-model chain, checked against GET /models
   4. apply_approval_patch.py      secret-store reads require approval again
   5. patch_readonly_hint.py       Hermes reads readOnlyHint at all (see its docstring)
+  5b. patch_desktop_single_model.py  the desktop app obeys the single-model rule too
   6. gateway_launcher.py --install  the task reaches the guard; policy reported
   7. check_telegram_surface.py    all nine conditions, under Hermes' interpreter
   8. tests/test_surface_guard.py  the negative tests -- proof it still REFUSES
@@ -81,6 +82,8 @@ def steps() -> list[tuple]:
          REPO / "hermes" / "patch_readonly_hint.py", [], agent, None, True),
         ("elicitation per-call patch",
          REPO / "hermes" / "patch_elicitation_percall.py", [], agent, None, True),
+        ("desktop single-model patch",
+         REPO / "hermes" / "patch_desktop_single_model.py", [], agent, None, True),
         ("gateway launcher + task policy",
          REPO / "hermes" / "gateway_launcher.py", ["--install"], agent, None, False),
         ("startup guard (all nine conditions)",

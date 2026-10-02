@@ -46,8 +46,11 @@ INSTRUCTION = (
 
 
 def run_arm(label: str, token_tools: bool) -> dict:
-    project = DEV_ROOT / "scratch" / f"ab-{'on' if token_tools else 'off'}"
-    shutil.rmtree(project, ignore_errors=True)
+    # Its own directory, inside no repository: DEV_ROOT/scratch is a git repo,
+    # and working there branched someone else's repository on every run.
+    import tempfile  # noqa: PLC0415
+    project = Path(tempfile.mkdtemp(prefix=f".agent-ab-{'on' if token_tools else 'off'}-",
+                                    dir=DEV_ROOT))
 
     started = time.time()
     with MCPStdioClient([PY, AGENT], timeout=1200) as client:

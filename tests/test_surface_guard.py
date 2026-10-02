@@ -30,6 +30,7 @@ end-to-end refusal recorded in documentation/AUDIT-agentic-os.md.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -563,6 +564,51 @@ def test_single_model() -> None:
           "condition 9 is not wired into check() or reads only one key")
 
 
+def test_desktop_single_model_patch() -> None:
+    """The desktop patch applies cleanly, refuses on a moved anchor, and --check
+    tells an unpatched checkout from a patched one. Run against copies."""
+    import shutil as _sh  # noqa: PLC0415
+    import subprocess  # noqa: PLC0415
+    script = REPO / "hermes" / "patch_desktop_single_model.py"
+    real = Path(os.environ.get("LOCALAPPDATA", "")) / "hermes" / "hermes-agent" / "tui_gateway"
+    sys.path.insert(0, str(REPO / "hermes"))
+    import patch_desktop_single_model as patch  # noqa: PLC0415
+
+    def run(home: Path, *args: str):
+        return subprocess.run([sys.executable, str(script), *args], capture_output=True,
+                              text=True, env=dict(os.environ, HERMES_HOME=str(home)), timeout=60)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tui = Path(tmp) / "hermes-agent" / "tui_gateway"
+        tui.mkdir(parents=True)
+        # Minimal stand-ins that carry exactly the two anchors.
+        (tui / "server.py").write_text(
+            "def f(cfg, model_override, provider_override):\n" + patch.MAKE_AGENT_OLD,
+            encoding="utf-8")
+        (tui / "model_switch.py").write_text(
+            "def g(result, cfg):\n" + patch.SWITCH_OLD, encoding="utf-8")
+        check("desktop patch: --check fails on an unpatched checkout",
+              run(Path(tmp), "--check").returncode != 0)
+        done = run(Path(tmp))
+        check("desktop patch: applies to both files", done.returncode == 0
+              and patch.MARKER in (tui / "server.py").read_text(encoding="utf-8")
+              and patch.MARKER in (tui / "model_switch.py").read_text(encoding="utf-8"),
+              done.stdout[-300:])
+        check("desktop patch: idempotent", run(Path(tmp)).stdout.count("already patched") == 2)
+        (tui / "server.py").write_text("def f():\n    pass\n", encoding="utf-8")
+        moved = run(Path(tmp))
+        check("desktop patch: a moved anchor is a FAIL, not a silent skip",
+              moved.returncode != 0 and "anchor not found" in moved.stdout, moved.stdout[-300:])
+
+    if real.exists():
+        check("desktop patch: present in the live Hermes checkout",
+              all(patch.MARKER in (real / n).read_text(encoding="utf-8")
+                  for n in ("server.py", "model_switch.py")),
+              "run hermes/patch_desktop_single_model.py")
+    post = (REPO / "hermes" / "post_update.py").read_text(encoding="utf-8")
+    check("post_update re-applies the desktop patch", "patch_desktop_single_model.py" in post)
+
+
 def test_every_guarded_surface_is_checked() -> None:
     """The cron surface was wide open while the guard watched only telegram.
 
@@ -643,6 +689,7 @@ def main() -> int:
                  test_annotations_match_the_manifest,
                  test_gate_sees_annotations,
                  test_single_model,
+                 test_desktop_single_model_patch,
                  test_every_guarded_surface_is_checked,
                  test_mcp_approval_is_per_call,
                  test_unreadable_manifest_fails_closed,

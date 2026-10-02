@@ -673,10 +673,23 @@ a list that only ever grows stops being read.
 
 ## Model placement, 2026-10-02: why pm and research stay direct calls
 
-**pm and research run on `gemini-3.8-flash`** (confirmed against Gemini's
-`GET /v1beta/models`), called directly through `agents/_common/llm.py`.
-Groq and OpenRouter stay behind it, and every fallthrough is written to the
-audit log as `llm_fallthrough`.
+**pm and research run on `gemini-3.5-flash`** (confirmed against Gemini's
+`GET /v1beta/models/gemini-3.5-flash`), called directly through
+`agents/_common/llm.py`. They briefly ran on `gemini-3.8-flash`, but it
+returned HTTP 503 "high demand" on 7 of 9 calls. A config that names a
+primary which is not doing the work misdescribes the system, so they moved.
+3.5 Flash is better but not clean: in three real calls per agent, 3 of its 12
+calls failed (two 503s, one 90-second timeout).
+
+**Why agents may fall through when Hermes may not.** Hermes has no fallback
+because a hidden failover once cost a day: the conversation moved to a free
+tier that behaved differently, and nothing said so. The property being
+protected is *not silent*, not *no second provider*. pm and research keep Groq
+(then OpenRouter) behind Gemini because every fallthrough is written to that
+agent's audit log as `llm_fallthrough`, with the provider, model and reason,
+and the result names the model that actually answered. A degraded answer there
+is visible; on Hermes it was not. If an agent's fallthrough ever stops being
+logged, it loses the right to fall through.
 
 **Research does not get Antigravity or any other agentic executor.** It reads
 untrusted web content by design. Prompt injection is harmless there for one
